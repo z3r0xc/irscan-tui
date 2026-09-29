@@ -205,11 +205,20 @@ that costs them a finding.
 Rows past the 10th appear together. A 400-finding list that staggers for 4.8 seconds is a
 list that appears broken, and the user is reading the *top* of it anyway.
 
-### 5.4 Motion is switchable, and it is off in the degraded paths
+### 5.4 Motion is switchable, and only the flag switches it
 
-`--no-motion`, or `NO_COLOR` set, or not a TTY, and every duration above becomes 0 — the
-motion still *happens*, it is just instantaneous, so no code path has a "skip the animation"
-branch to get wrong. This is why motion is expressed as a duration rather than as a boolean.
+`--no-motion` and every duration above becomes 0 — the motion still *happens*, it is just
+instantaneous, so no code path has a "skip the animation" branch to get wrong. This is why
+motion is expressed as a duration rather than as a boolean.
+
+`NO_COLOR` deliberately does **not** switch it off, and this section originally said it did.
+That was wrong, and implementing it was what showed why: `NO_COLOR` is a statement about
+colour, not about movement, and a user who sets it still wants a progress bar that advances.
+The monochrome case is precisely the remote box where watching the rate of a slow scan
+matters most, so coupling the two froze the bar in exactly the situation it exists to serve.
+
+Not a TTY is the other real case, and there the interface is not being shown at all — it is
+being piped, so there is nothing to animate.
 
 ### 5.5 Frame policy
 
@@ -244,6 +253,13 @@ work for nothing. **No render code branches on depth.**
 | 256 | §2.4's `Indexed` column; all other structure identical |
 | 16 | `accent`/`damage`/`staged`/`good` collapse to Cyan/Red/Yellow/Green; **`DIM` is replaced by `BOLD` on a dark ink step**, because many terminals render `DIM` as near-invisible and the label step would vanish |
 | none | no `fg`/`bg` anywhere; every distinction above survives through **glyph, weight and text**, because §1 was written to make it survive this |
+
+Three consequences of "no colour" are worth naming, because each was a place where the naive
+port would have produced something broken rather than something plainer:
+
+1. **Tokens collapse to `Reset`, and `Reset` is not the same as absent.** `Style::new().fg(Color::Reset)` emits an explicit reset request; `Style::new()` emits nothing. A theme that hands its collapsed tokens straight to `fg()` therefore still emits colour sequences, so every foreground style goes through one gate that declines to name a colour at all.
+2. **The unfocused border is dropped, not dimmed.** A hairline in the default foreground is the same brightness as the text inside the region, so the rule would compete with the content rather than separate it. A rule that cannot be told from the text is not separating anything.
+3. **A progress bar's filled and empty parts swap to a glyph difference** (`█` against `░`), because an empty cell cannot be made to look empty in monochrome.
 
 The `none` case is the test of the whole system. If the interface still communicates severity,
 focus and state in monochrome, then the colour was never carrying the information — it was
