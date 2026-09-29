@@ -18,6 +18,9 @@ serde_json = "1.0"
 unicode-width = "0.2"
 # The archive belongs under the user's data directory, never beside the executable.
 directories = "6.0"
+# One error type for the report boundary. The codec is the only place a failure is
+# turned into a message, so a caller can show the reason instead of a bare Err.
+thiserror = "2.0"
 
 # THE PLATFORM BOUNDARY. Declared here, once, and it is the only place in the manifest
 # where a platform appears. The engine is raw Win32 FFI with no cfg(windows) anywhere in
