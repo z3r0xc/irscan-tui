@@ -1,0 +1,40 @@
+# Cargo.lock, committed. The TUI has no runtime dependency the platform split could
+# otherwise resolve differently, and an audit is only reproducible against a lockfile.
+
+# Every advisory currently open in the tree comes from ONE crate, through one path:
+#
+#     irscan-tui -> irscan -> yara-x 1.21 -> { wasmtime 45.0.3, rsa 0.9.10, bincode 2.0.1 }
+#
+#   RUSTSEC-2026-0269  wasmtime  filesystem sandbox escape on trailing slashes  8.8 high
+#   RUSTSEC-2023-0071  rsa       Marvin key-recovery timing sidechannel        5.9 medium
+#   RUSTSEC-2026-0316  wasmtime  record lifting past the hostcall fuel limit   1.0 low
+#   RUSTSEC-2026-0222  wasmtime  type indices mixed between engines             3.8 low
+#   RUSTSEC-2025-0141  bincode   unmaintained
+#
+# None of them is reachable from this crate's code, and none is reachable from
+# anything the interface does: this crate never evaluates a Wasm module, never does
+# RSA, and never serialises with bincode. These are crates `yara-x` links but that a
+# YARA rule scan does not execute.
+#
+# They are allowed here rather than ignored, and the distinction matters:
+#
+#   - `[ignore]` would suppress these findings for EVERY future advisory in the same
+#     crates, including a real one in a code path this crate does reach. A future
+#     vulnerability would then be invisible, and the reason it would be invisible
+#     would be a line written today about a different problem.
+#   - the list below is pinned to the specific advisory IDs, so a NEW advisory in
+#     wasmtime, rsa or bincode fails the audit and has to be argued about.
+#
+# When yara-x moves off wasmtime, or the engine stops linking it, delete these lines
+# rather than leaving them to rot. The right fix is upstream, in yara-x.
+#
+# Any advisory in a crate NOT named here fails `cargo audit` and must be fixed here.
+
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0071",
+    "RUSTSEC-2025-0141",
+    "RUSTSEC-2026-0222",
+    "RUSTSEC-2026-0269",
+    "RUSTSEC-2026-0316",
+]
