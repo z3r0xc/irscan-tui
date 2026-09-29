@@ -1,0 +1,58 @@
+[package]
+name = "irscan-tui"
+version = "0.1.0"
+edition = "2021"
+# Matches the engine, so one toolchain builds both and a bug report needs one version.
+rust-version = "1.85"
+description = "A terminal interface for irscan, the read-only Windows endpoint triage tool"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/z3r0xc/irscan-tui"
+
+[dependencies]
+ratatui = "0.30"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Truncation is by display cell, not by chars or bytes: a path of CJK characters is
+# fewer chars and twice the cells, and a row that overflows wraps into the next row's
+# layout. See docs/design.md section 4.2.
+unicode-width = "0.2"
+# The archive belongs under the user's data directory, never beside the executable.
+directories = "6.0"
+
+# THE PLATFORM BOUNDARY. Declared here, once, and it is the only place in the manifest
+# where a platform appears. The engine is raw Win32 FFI with no cfg(windows) anywhere in
+# it, so windows-sys does not compile off Windows and a crate that depended on irscan
+# unconditionally would not cross-compile. Gating the dependency instead of the code
+# keeps the entire interface buildable and testable on every platform; only running a
+# live scan against a Windows host is Windows-only.
+# See docs/spec.md section 2, and `the_platform_boundary_is_one_module` in
+# src/scan/engine.rs.
+[target.'cfg(windows)'.dependencies]
+irscan = { path = "../prov/ir-recon" }
+
+[dev-dependencies]
+# `test-util` is what makes `#[tokio::test(start_paused = true)]` possible, and it is
+# NOT part of `full` - a common enough mistake that the reason is written down here.
+tokio = { version = "1", features = ["macros", "rt", "test-util", "time", "sync"] }
+
+# Same block as the engine's, so `cargo clippy` means the same thing in both
+# repositories. Production code may not unwrap, expect or panic; test code uses them as
+# its assertion mechanism, and the crate root lifts the ban for `cfg(test)` only.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+# `panic = "abort"` is deliberately absent, unlike the engine. A panic in a terminal
+# program leaves the terminal in the alternate screen, in raw mode, with the cursor
+# hidden. The unwind that runs the restore hook is what makes a panic recoverable, so
+# this profile has to unwind.
