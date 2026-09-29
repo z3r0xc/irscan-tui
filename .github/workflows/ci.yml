@@ -1,0 +1,99 @@
+# Every gate the spec names, run on every push, in one place.
+#
+# The point of this file is that the same four commands are what a developer runs
+# locally and what CI runs. A gate that only exists in CI is a gate that a
+# developer learns to ignore, and a gate that only exists locally is a gate that
+# breaks on someone else's machine on a day nobody is watching.
+
+name: ci
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are not advisory in this project. The engine sets the same lint block,
+  # so `cargo clippy` means the same thing in both repositories.
+  RUSTFLAGS: -D warnings
+  # The engine is a sibling checkout rather than a crates.io dependency, so a
+  # checkout of this repository on its own cannot satisfy the `cfg(windows)`
+  # dependency. CI checks the engine out beside it, which is also how the two are
+  # actually developed.
+  IRSCAN_REPO: https://github.com/z3r0xc/irscan.git
+
+  # Linux needs the path in `Cargo.toml` rewritten: the dependency there is
+  # `../prov/ir-recon`, which is how the two sit on a developer machine and is
+  # not a layout a runner can reproduce. Rewriting it is the honest way to test
+  # the same manifest, rather than maintaining a second copy that can drift.
+  ENGINE_PATH: ir-recon
+
+jobs:
+  # The suite runs twice: once for the host, once with the engine absent. The second
+  # is not a theoretical check - it is the only thing standing between the
+  # cross-compile claim in docs/spec.md and a `cfg` someone added in a hurry.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The engine, beside this repository so the `../prov/ir-recon` path
+      # dependency resolves. Without it neither job can build, and the Linux job
+      # cannot prove the point it exists to prove.
+      - name: Check out the engine beside this repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRSCAN_REPO }}
+          path: prov
+
+      - name: Point the manifest at the checkout
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            sed -i "s|path = \"../prov/ir-recon\"|path = \"../prov/${{ env.ENGINE_PATH }}\"|" Cargo.toml
+          fi
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Test
+        run: cargo test --all-targets -- --test-threads=1
+
+      # Verifies the crate compiles where `irscan` does not exist, which is the
+      # FR-1 guarantee and the reason the dependency is platform-gated at all.
+      - name: It also builds where the engine cannot exist
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo build --target x86_64-unknown-linux-gnu
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rustsec/audit-check@v1.4.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
