@@ -1,0 +1,18 @@
+# Build artefacts
+/target
+**/*.rs.bk
+
+# The build embeds a manifest into the Windows binary; see docs/spec.md SR-7.
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Local overrides. `.cargo/config.toml` at this crate's root is committed on
+# purpose (it decides the static CRT); anything else under `.cargo` is local.
+.cargo/config.local.toml
+
+# Report archives written at runtime, never committed: they contain host facts
+# and evidence taken from a machine that was scanned, which is not ours to publish.
+*.irscan-archive.json
+archive/
