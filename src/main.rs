@@ -9,8 +9,16 @@ fn main() -> std::io::Result<()> {
     // stdout and exiting 0 is what a user who typed `irscan-tui --help` expects.
     // Anything else would make a shell script treat a help request as a failure.
     let options = match Options::parse(&args) {
-        Ok(options) => options,
+        // `Ok(None)` is `--help`: a request, answered on stdout with a zero exit so
+        // a script reading the flags is not told the flag was rejected.
+        Ok(None) => {
+            println!("{}", run::usage());
+            return Ok(());
+        }
+        Ok(Some(options)) => options,
         Err(message) => {
+            // A bad flag is also printed to stdout rather than stderr: the message
+            // ends with the usage, and mixing streams would split them apart.
             println!("{message}");
             return Ok(());
         }
@@ -28,7 +36,7 @@ fn main() -> std::io::Result<()> {
     // leaves the user's terminal in the alternate screen with the cursor hidden and
     // no echo, and the only way out is `reset`. This is why the release profile
     // unwinds rather than aborting.
-    let mut terminal = ratatui::init();
+    let terminal = ratatui::init();
 
     let outcome = run::run(terminal, app);
     ratatui::restore();
@@ -63,7 +71,8 @@ fn persist(options: &Options, app: &irscan_tui::app::App) {
         eprintln!("irscan-tui: cannot create {}: {e}", dir.display());
         return;
     }
-    let path = irscan_tui::report::archive_path(&dir, &report.host_key(), &report.host.collected_at);
+    let path =
+        irscan_tui::report::archive_path(&dir, &report.host_key(), &report.host.collected_at);
     match serde_json::to_string(report) {
         Ok(json) => {
             if let Err(e) = std::fs::write(&path, json) {

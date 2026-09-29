@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 pub const TICK: Duration = Duration::from_millis(33);
 
 /// Flags parsed from the command line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Options {
     /// Do not animate anything. Every duration becomes zero and the interface is
     /// otherwise identical - see `docs/design.md` section 5.4.
@@ -42,18 +42,6 @@ pub struct Options {
     pub open: Option<std::path::PathBuf>,
     /// Print the version and exit.
     pub version: bool,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Options {
-            no_motion: false,
-            ascii: false,
-            archive_dir: None,
-            open: None,
-            version: false,
-        }
-    }
 }
 
 /// Said when `--archive-dir` was given without a path.
@@ -94,7 +82,13 @@ impl Options {
                     options.archive_dir = Some(std::path::PathBuf::from(value));
                 }
                 other if other.starts_with("--archive-dir=") => {
-                    let value = &other[15..];
+                    // `strip_prefix` rather than a hand-counted byte offset. The
+                    // offset version was off by one, so `--archive-dir=/x` lost
+                    // its leading slash and became a relative path - which writes
+                    // the archive somewhere else entirely and says nothing.
+                    let value = other
+                        .strip_prefix("--archive-dir=")
+                        .ok_or_else(|| NO_ARCHIVE_DIR.to_string())?;
                     if value.is_empty() {
                         return Err(NO_ARCHIVE_DIR.to_string());
                     }
@@ -109,7 +103,7 @@ impl Options {
                     options.open = Some(std::path::PathBuf::from(value));
                 }
                 other if other.starts_with("--open=") => {
-                    let value = &other[7..];
+                    let value = other.strip_prefix("--open=").unwrap_or_default();
                     if value.is_empty() {
                         return Err(NO_OPEN.to_string());
                     }
@@ -313,7 +307,10 @@ mod tests {
         // On a terminal with keyboard enhancement one physical press produces a
         // press AND a release. Handling both means a `j` moves two rows and a `q`
         // is pressed twice. Ratatui's own example filters on Press for this reason.
-        assert_eq!(translate(press(KeyCode::Char('j'))), Some(Event::Action(Action::Next)));
+        assert_eq!(
+            translate(press(KeyCode::Char('j'))),
+            Some(Event::Action(Action::Next))
+        );
         assert_eq!(translate(release(KeyCode::Char('j'))), None);
     }
 
@@ -387,8 +384,14 @@ mod tests {
         // A typo in a flag silently ignored is a flag that does not do what the
         // user asked, and they have no way to tell.
         let err = Options::parse(&args(&["--no-motions"])).unwrap_err();
-        assert!(err.contains("--no-motions"), "the error should name what was typed: {err}");
-        assert!(err.contains("Usage"), "the error should show the usage: {err}");
+        assert!(
+            err.contains("--no-motions"),
+            "the error should name what was typed: {err}"
+        );
+        assert!(
+            err.contains("Usage"),
+            "the error should show the usage: {err}"
+        );
     }
 
     #[test]
@@ -404,12 +407,29 @@ mod tests {
 
     #[test]
     fn a_value_can_be_given_with_a_space_or_with_an_equals_sign() {
+        // The two spellings have to agree. An earlier version sliced past the `=`
+        // at the wrong offset, so `--open=a.json` parsed to a different path than
+        // `--open a.json` - and the difference only showed up as a file that could
+        // not be found, with no error anywhere saying why.
         let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let spaced = Options::parse(&args(&["--open", "a.json"])).expect("valid");
-        let equals = Options::parse(&args(&["--open=b.json"])).expect("valid");
-        let spaced = spaced.expect("--help was not asked for");
-        let equals = equals.expect("--help was not asked for");
-        assert_eq!(spaced.open, equals.open);
+        for flag in ["--open", "--archive-dir"] {
+            let spaced = Options::parse(&args(&[flag, "report.json"]))
+                .expect("valid")
+                .expect("--help was not asked for");
+            let equals = Options::parse(&args(&[&format!("{flag}=report.json")]))
+                .expect("valid")
+                .expect("--help was not asked for");
+            let (spaced_value, equals_value) = if flag == "--open" {
+                (spaced.open, equals.open)
+            } else {
+                (spaced.archive_dir, equals.archive_dir)
+            };
+            assert_eq!(
+                spaced_value, equals_value,
+                "{flag} disagrees between its two spellings"
+            );
+            assert_eq!(spaced_value, Some(std::path::PathBuf::from("report.json")));
+        }
     }
 
     #[test]
@@ -417,8 +437,12 @@ mod tests {
         // A script that runs `--help` to read the flags must not see a non-zero
         // exit, or it concludes the flag was rejected rather than answered.
         let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert!(Options::parse(&args(&["--help"])).expect("help is not an error").is_none());
-        assert!(Options::parse(&args(&["-h"])).expect("help is not an error").is_none());
+        assert!(Options::parse(&args(&["--help"]))
+            .expect("help is not an error")
+            .is_none());
+        assert!(Options::parse(&args(&["-h"]))
+            .expect("help is not an error")
+            .is_none());
     }
 
     #[test]
@@ -454,7 +478,13 @@ mod tests {
     fn the_usage_text_names_every_flag_the_parser_accepts() {
         // A flag that works but is not documented is a flag nobody will use, and
         // this is the cheapest place to notice one being added.
-        for flag in ["--open", "--archive-dir", "--no-motion", "--ascii", "--version"] {
+        for flag in [
+            "--open",
+            "--archive-dir",
+            "--no-motion",
+            "--ascii",
+            "--version",
+        ] {
             assert!(usage().contains(flag), "{flag} is not in the help text");
         }
     }
