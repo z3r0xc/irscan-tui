@@ -468,8 +468,7 @@ impl App {
             Event::ScanFinished { failed } => self.scan_finished(failed),
             Event::ScanFailed(message) => {
                 self.scan = ScanState::Idle;
-                self.push_log(LogKind::Failure, message.clone());
-                self.notice = Some((message, true));
+                self.fail(&message);
             }
             _ => {}
         }
@@ -736,12 +735,12 @@ impl App {
         if let Some(path) = entry.path.clone() {
             if let Some(dir) = path.parent() {
                 if let Err(e) = crate::report::ensure_inside(dir, &path) {
-                    self.notice = Some((e.to_string(), true));
+                    self.fail(&e.to_string());
                     return;
                 }
             }
             if let Err(e) = std::fs::remove_file(&path) {
-                self.notice = Some((e.to_string(), true));
+                self.fail(&e.to_string());
                 return;
             }
         }
@@ -751,10 +750,35 @@ impl App {
             .min(self.archive.len().saturating_sub(1));
         self.archive_compare = None;
         self.delta = None;
-        self.notice = Some((format!("deleted the scan of {}", removed.host.name), false));
+        self.notice = Some((
+            format!("deleted the scan of {}", clean_name(&removed.host.name)),
+            false,
+        ));
+    }
+
+    /// Put a failure on screen.
+    ///
+    /// Every failure message goes through here. Both real callers pass a string
+    /// containing a *path*, and a path is built from the host name and the
+    /// timestamp - which came off a machine under test. An error message carrying
+    /// an escape sequence onto the status line is the terminal hijack SR-1 exists
+    /// to stop, and nothing about being an error message makes it safe.
+    fn fail(&mut self, message: &str) {
+        // `push_log` sanitises too, and that is deliberate rather than redundant:
+        // the log and the notice are two different surfaces, and only one of them
+        // funnels through `push_log`.
+        self.push_log(LogKind::Failure, message.to_string());
+        self.notice = Some((crate::report::clean(message, 200), true));
     }
 
     /// Add a line to the live log, dropping the oldest if it is over the cap.
+    ///
+    /// The sanitising happens HERE rather than at each call site, and that is the
+    /// whole point: a collector's error message contains a file path or a service
+    /// name, and both came off the machine under test. Sanitising at three call
+    /// sites would work until a fourth was added by someone who did not know the
+    /// rule, and the failure is an escape sequence repainting the terminal. One
+    /// chokepoint, one rule, and every line that reaches the live log is clean.
     pub fn push_log(&mut self, kind: LogKind, text: String) {
         if self.log.len() >= self.log_cap {
             // Drop a tenth at a time rather than one per line: `remove(0)` is O(n)
@@ -763,7 +787,10 @@ impl App {
             let drop = self.log_cap / 10;
             self.log.drain(..drop);
         }
-        self.log.push(LogLine { kind, text });
+        self.log.push(LogLine {
+            kind,
+            text: crate::report::clean(&text, 300),
+        });
     }
 
     /// Advance every animation.
@@ -780,6 +807,16 @@ impl App {
             self.dirty = false;
         }
     }
+}
+
+/// A host name reduced to something safe to show in a status line.
+///
+/// Two passes, and both are needed: `clean` for the characters that would lie to
+/// the reader or hijack the terminal, `truncate_to_cells` for the length, because
+/// a host name is a free-text field on a machine an attacker controls and there is
+/// no reason for it to be short.
+fn clean_name(name: &str) -> String {
+    crate::report::truncate_to_cells(&crate::report::clean(name, 64), 40)
 }
 
 /// What changed between two findings lists.
@@ -1295,6 +1332,72 @@ mod tests {
         );
         // The newest lines are the ones worth keeping.
         assert!(state.log.last().unwrap().text.contains("499"));
+    }
+
+    #[test]
+    fn a_log_line_built_from_a_host_string_cannot_reach_the_screen_unstripped() {
+        // SR-1, and a real hole found by reading the code rather than by a test
+        // failing. A collector's error message contains a path, and a path is
+        // built from the host name - which came off the machine under test. The log
+        // is one of the two surfaces it reaches, and the sanitising used to happen
+        // at the call sites, which means it happened for the three that existed and
+        // not for the fourth someone adds later.
+        let mut state = app();
+        state.push_log(
+            LogKind::Failure,
+            "cannot read C:\\ws\\exe\u{1b}[2J\u{1b}[H\u{7}svc.exe".to_string(),
+        );
+        let line = &state.log[0].text;
+        assert!(
+            !line.contains('\u{1b}'),
+            "an escape sequence reached the live log: {line:?}"
+        );
+        assert!(
+            !line.contains('\u{7}'),
+            "a BEL reached the live log: {line:?}"
+        );
+        // The readable part survives; only the escape machinery goes.
+        assert!(
+            line.contains("svc.exe"),
+            "the message lost its content: {line}"
+        );
+    }
+
+    #[test]
+    fn a_failure_notice_cannot_carry_an_escape_onto_the_status_line() {
+        // The second surface. `delete_selected` puts `e.to_string()` here, and an
+        // io::Error carries the path it failed on - so this is attacker-influenced
+        // text on the one row that is always visible, and being an error message
+        // does not make it safe.
+        let mut state = app();
+        state.goto(Screen::Archive);
+        state.archive = vec![archived("PC\u{1b}[31m-01", vec![])];
+        state.apply(Event::Action(Action::DeleteSelected));
+        let (notice, _) = state.notice.expect("the deletion should be acknowledged");
+        assert!(
+            !notice.contains('\u{1b}'),
+            "an escape sequence reached the status line: {notice:?}"
+        );
+        assert!(
+            notice.contains("PC"),
+            "the message lost its content: {notice}"
+        );
+    }
+
+    #[test]
+    fn a_scan_failure_message_is_bounded_before_it_is_shown() {
+        // A collector can report an arbitrarily long error, and the status line is
+        // one row: an unbounded message there pushes the rest of the line off the
+        // screen and the notice becomes unreadable at exactly the moment it matters.
+        let mut state = app();
+        let long = "x".repeat(100_000);
+        state.apply(Event::ScanFailed(long));
+        let (notice, _) = state.notice.expect("a failure should be reported");
+        assert!(
+            notice.chars().count() <= 200,
+            "the notice is {} chars",
+            notice.chars().count()
+        );
     }
 
     #[test]

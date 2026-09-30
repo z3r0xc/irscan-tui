@@ -1,9 +1,15 @@
-# Every gate the spec names, run on every push, in one place.
+# Every gate the spec names, run on every push.
 #
-# The point of this file is that the same four commands are what a developer runs
-# locally and what CI runs. A gate that only exists in CI is a gate that a
-# developer learns to ignore, and a gate that only exists locally is a gate that
+# The same four commands run locally and here. A gate that only exists in CI is a
+# gate a developer learns to ignore; one that only exists locally is a gate that
 # breaks on someone else's machine on a day nobody is watching.
+#
+# The jobs are split because the engine is a PRIVATE repository. `GITHUB_TOKEN` only
+# sees this repository, so any job needing the engine needs `secrets.IRSCAN_TOKEN`
+# (a PAT with `repo` scope). Rather than make the whole pipeline depend on a secret
+# that expires, the job that proves the central claim - that the interface builds
+# and is tested with no engine present at all - needs no secret. So the guarantee
+# cannot be taken away by an expired credential.
 
 name: ci
 
@@ -18,55 +24,42 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Warnings are not advisory in this project. The engine sets the same lint block,
-  # so `cargo clippy` means the same thing in both repositories.
+  # Warnings are not advisory here. The engine sets the same lint block, so
+  # `cargo clippy` means the same thing in both repositories.
   RUSTFLAGS: -D warnings
-  # The engine is a sibling checkout rather than a crates.io dependency, so a
-  # checkout of this repository on its own cannot satisfy the `cfg(windows)`
-  # dependency. CI checks the engine out beside it, which is also how the two are
-  # actually developed.
-  # `owner/repo`, not a URL: `actions/checkout` rejects a URL with
-  # "Expected format {owner}/{repo}", which is a confusing way to learn that.
   IRSCAN_REPO: z3r0xc/irscan
-
-  # Linux needs the path in `Cargo.toml` rewritten: the dependency there is
-  # `../prov/ir-recon`, which is how the two sit on a developer machine and is
-  # not a layout a runner can reproduce. Rewriting it is the honest way to test
-  # the same manifest, rather than maintaining a second copy that can drift.
+  # The engine's crate directory, and the suffix the manifest's `../prov/ir-recon`
+  # is rewritten to where that layout cannot be reproduced.
   ENGINE_PATH: ir-recon
 
 jobs:
-  # The suite runs twice: once for the host, once with the engine absent. The second
-  # is not a theoretical check - it is the only thing standing between the
-  # cross-compile claim in docs/spec.md and a `cfg` someone added in a hurry.
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+  # Proves FR-1 with no secret and no engine: this is the whole interface built and
+  # tested on a host where `irscan` does not exist. If a `cfg` ever leaks out of
+  # src/scan.rs, this is the job that catches it.
+  shell-only:
+    name: shell only (no engine)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # The engine, beside this repository so the `../prov/ir-recon` path
-      # dependency resolves. Without it neither job can build, and the Linux job
-      # cannot prove the point it exists to prove.
-      - name: Check out the engine beside this repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.IRSCAN_REPO }}
-          path: prov
-
-      - name: Point the manifest at the checkout
-        shell: bash
+      - name: Remove the engine dependency
         run: |
-          if [ "${{ runner.os }}" != "Windows" ]; then
-            sed -i "s|path = \"../prov/ir-recon\"|path = \"../prov/${{ env.ENGINE_PATH }}\"|" Cargo.toml
+          # The dependency is deleted rather than pointed at a copy. A runner
+          # cannot use the engine anyway, and a build that genuinely has no
+          # `irscan` is a stronger check than one where the crate is present and
+          # merely gated out - it is the configuration a Linux user's machine has.
+          sed -i '/^\[target\..*cfg(windows)/,+1d' Cargo.toml
+          # Checked as the ACTIVE dependency line, not as the word appearing
+          # anywhere. Four comments in the manifest explain why the dependency is
+          # gated and one more is the package name; a plain `grep -q irscan`
+          # matches those too and would fail this job for doing exactly the right
+          # thing. Anchored on `^irscan = `, which is the only form it ever takes.
+          if grep -q '^irscan = ' Cargo.toml; then
+            echo "::error::the engine dependency survived removal, so this job proves nothing"
+            exit 1
           fi
 
-      - name: Install the Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
@@ -84,11 +77,48 @@ jobs:
       - name: Test
         run: cargo test --all-targets -- --test-threads=1
 
-      # Verifies the crate compiles where `irscan` does not exist, which is the
-      # FR-1 guarantee and the reason the dependency is platform-gated at all.
-      - name: It also builds where the engine cannot exist
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo build --target x86_64-unknown-linux-gnu
+  # The full matrix, with the engine present. Needs the secret.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the engine beside this repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRSCAN_REPO }}
+          token: ${{ secrets.IRSCAN_TOKEN }}
+          path: prov
+
+      - name: Point the manifest at the checkout
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            sed -i "s|path = \"../prov/ir-recon\"|path = \"../prov/${{ env.ENGINE_PATH }}\"|" Cargo.toml
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Test
+        run: cargo test --all-targets -- --test-threads=1
 
   audit:
     name: audit
@@ -96,19 +126,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The engine again. An audit resolves the whole dependency graph, and the
-      # graph contains a path dependency, so without the engine present the audit
-      # fails to load the manifest rather than reporting anything. That is a
-      # confusing failure: it looks like a broken manifest rather than a missing
-      # sibling checkout, and the first version of this job had exactly that.
+      # The engine again: an audit resolves the whole dependency graph, and a path
+      # dependency it cannot read is not an audit result, it is a confusing
+      # "failed to read Cargo.toml" that looks like a broken manifest.
       - name: Check out the engine beside this repository
         uses: actions/checkout@v4
         with:
           repository: ${{ env.IRSCAN_REPO }}
+          token: ${{ secrets.IRSCAN_TOKEN }}
           path: prov
 
       - name: Point the manifest at the checkout
-        shell: bash
         run: |
           sed -i "s|path = \"../prov/ir-recon\"|path = \"../prov/${{ env.ENGINE_PATH }}\"|" Cargo.toml
 
