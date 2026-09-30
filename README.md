@@ -22,59 +22,59 @@ changed. This keeps every scan and makes that comparison the centre of the inter
 > reporting success while writing nothing is a lie told about a result someone is about to
 > act on. Edit `rules/` in the engine directly, or pipe `irscan --json` out of the CLI.
 
-## Running it
+## Install
+
+```powershell
+irm https://raw.githubusercontent.com/z3r0xc/irscan-tui/main/install.ps1 | iex
+```
+
+Puts the executable in `%LOCALAPPDATA%\Programs\irscan-tui`, adds that to your user PATH,
+and verifies the download against the published SHA-256 before writing anything. No
+administrator rights needed. Open a new terminal afterwards so the PATH change is picked up.
+
+A specific version, or somewhere else to install:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/z3r0xc/irscan-tui/main/install.ps1))) -Version v0.1.0
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/z3r0xc/irscan-tui/main/install.ps1))) -InstallDir D:\Tools
+```
+
+`GITHUB_TOKEN` is honoured if set, which lifts the anonymous API rate limit.
+
+## Build it instead
 
 ```bash
 git clone https://github.com/z3r0xc/irscan-tui
 cd irscan-tui
-
-# The engine is a path dependency. Put it beside this repository, or point
-# Cargo.toml at wherever yours lives:
-#   [target.'cfg(windows)'.dependencies]
-#   irscan = { path = "../irscan/ir-recon" }
-git clone https://github.com/z3r0xc/irscan ../irscan   # or adjust the path
-
+git clone https://github.com/z3r0xc/irscan ../irscan   # the engine is a path dependency
 cargo build --release
-./target/release/irscan-tui
 ```
 
-One executable, **7.3 MB**, nothing to install beside it.
+**7.4 MB, one file, nothing to install beside it.** The binary is built with a static CRT —
+see `.cargo/config.toml` — so it does not need the Visual C++ redistributable, which is
+absent from a clean Windows install and arrives only with the redistributable. A dynamically
+linked build would install successfully and then refuse to start, which is the worst
+combination available. This is the same setting the engine uses, for the same reason.
 
-It does import `VCRUNTIME140.dll`, the Visual C++ runtime, which is **not** on a clean
-Windows install — it arrives with the redistributable. So a binary copied to a fresh
-machine may refuse to start. Build it self-contained and that goes away:
+## Run it
 
-```bash
-RUSTFLAGS="-C target-feature=+crt-static" cargo build --release
+```
+irscan-tui --elevate
 ```
 
-That produces a 7.4 MB binary whose only imports are Windows system libraries, all of
-which are present on every install. The engine already does this — see
-`prov/.cargo/config.toml`, which sets the same flag and explains why there — so this
-project is consistent with it rather than inventing a second answer.
-
-```bash
-./target/release/irscan-tui --open report.json    # read a report produced earlier
-./target/release/irscan-tui --elevate             # ask for administrator rights first
-./target/release/irscan-tui --no-motion           # no animation
-```
-
-Keys: `q` quit · `1`–`5` or `tab` screens · `s` scan · `S` cancel · `/` search ·
-`j`/`k` move · `J` clear filter · `x` compare · `d` delete · `e` export · `?` help.
-
-### Administrator rights, and why they matter
-
-**A scan without them cannot see the Security event log, Prefetch, or the image paths of
-protected processes.** The report that comes back is *shorter*, not *wrong*, and a short
-report reads like a clean one — which is the confusion this tool is built to prevent. So:
-
-- The header says `not admin · reduced coverage` for as long as that is true.
-- The scan screen **names** the three blind spots before the first collector runs.
-- `--elevate` asks for administrator rights through a UAC prompt and hands the terminal to
-  the elevated copy. Declining is fine — the scan runs, and the blind spots are still named.
+`--elevate` matters. A scan without administrator rights cannot see the Security event log,
+Prefetch, or the image paths of protected processes. The report that comes back is *shorter*
+rather than *wrong*, and a short report reads like a clean machine — which is the confusion
+this tool is built to prevent. So the header says `not admin · reduced coverage` for as long
+as that is true, the scan screen **names** the three blind spots before the first collector
+runs, and `--elevate` asks for the rights through a UAC prompt and hands the terminal to the
+elevated copy. Declining is fine: the scan runs, and the blind spots are still named.
 
 Windows Terminal does not run elevated by default, so `irscan-tui --elevate` is the
 difference between full coverage and three holes nobody was told about.
+
+Keys: `q` quit · `1`–`5` or `tab` screens · `s` scan · `S` cancel · `/` search ·
+`j`/`k` move · `J` clear filter · `x` compare · `d` delete · `?` help.
 
 ## Cross-platform, and what that means
 
