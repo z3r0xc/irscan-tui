@@ -27,9 +27,22 @@ fn main() -> std::io::Result<()> {
         println!("{}", run::NAME);
         return Ok(());
     }
+    // Elevation happens before the terminal is taken, because the terminal cannot
+    // survive being handed to another process. `--elevate` asks for a UAC prompt and
+    // hands over; this copy then exits, and the elevated one is the program. A
+    // declined prompt is not an error - the user made a decision - so the scan runs
+    // with reduced coverage and the interface says what it will not see, which is
+    // SR-6's whole point.
+    if options.elevate && !options.elevated_already {
+        if let Some(reason) = irscan_tui::scan::platform::relaunch_elevated() {
+            eprintln!("irscan-tui: {reason}");
+        } else {
+            // The elevated copy is running. This one has nothing left to do.
+            return Ok(());
+        }
+    }
 
     let mut app = run::build(&options);
-
     // FR-2: `--open` is the whole interface on a host with no engine, so it is
     // wired here rather than left as a parsed flag nobody reads. The failure is
     // reported through the app's notice, not to stderr: the terminal is already in
