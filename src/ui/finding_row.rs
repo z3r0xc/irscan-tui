@@ -41,13 +41,21 @@ pub fn row(app: &App, index: usize, width: u16) -> Line<'static> {
     // three so the column holds. The separator appended here is what keeps the
     // title from running straight into `HIGH`.
     let tag = format!("{} ", severity.tag());
+    // The evidence count is measured, not assumed. `{evidence:>2}` sets a MINIMUM
+    // width, so a finding with 10,000 evidence lines printed five digits where the
+    // budget reserved two, and the category column slid off the row - which is the
+    // one place a report-derived number defeated the cell budget and wrapped a row
+    // onto the next. Measuring it first means the title budget is correct for any
+    // count. `MAX_EVIDENCE` caps what can arrive, but the arithmetic should not
+    // depend on that holding.
     let evidence = finding.evidence.len();
+    let evidence_text = evidence.to_string();
     let category = truncate_to_cells(&finding.category, 20);
     // Every fixed cell is subtracted before the title is truncated, which is what
     // makes the row one row: glyph, its space, the four-cell tag, the separator
-    // after it, then the two-cell evidence count, two of padding, the category and
-    // one closing gap.
-    let evidence_cells = 2;
+    // after it, then the evidence count at its ACTUAL width, two of padding, the
+    // category and one closing gap.
+    let evidence_cells = evidence_text.width();
     let right = evidence_cells + 2 + category.width() + 1;
     let chip = 1 + 1 + TAG_CELLS + 1;
     let title_cells = (usize::from(width)).saturating_sub(chip + right);
@@ -59,7 +67,7 @@ pub fn row(app: &App, index: usize, width: u16) -> Line<'static> {
             format!("{} ", truncate_to_cells(&finding.title, title_cells)),
             text_style,
         ),
-        Span::styled(format!("{evidence:>2}"), theme.label(false)),
+        Span::styled(evidence_text, theme.label(false)),
         Span::raw("  "),
         Span::styled(category, theme.machine()),
     ])
@@ -187,5 +195,30 @@ mod tests {
         let text = text_rows(&buffer)[0].clone();
         assert!(text.trim_start().starts_with(Sev::High.glyph()));
         assert!(text.contains("HIGH"), "got {text:?}");
+    }
+
+    #[test]
+    fn a_finding_with_four_digit_evidence_count_does_not_push_the_category_off_the_row() {
+        // `format!("{evidence:>2}")` is a MINIMUM width, so a count of 10,000 printed
+        // five cells where the budget had reserved two - and the row grew by three,
+        // wrapping into the next one. This is the only place a number derived from
+        // the report defeated the cell budget.
+        let mut wide = make_row(Sev::High, "a finding with a lot of evidence");
+        wide.evidence = (0..10_000).map(|i| format!("line {i}")).collect();
+        let category = wide.category.clone();
+        let app = one(wide);
+        for width in [60u16, 80, 200] {
+            let line = row(&app, 0, width);
+            let rendered: usize = line.spans.iter().map(|s| s.content.width()).sum();
+            assert!(
+                rendered <= usize::from(width),
+                "a row rendered {rendered} cells into a {width}-cell terminal: {line:?}"
+            );
+            let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+            assert!(
+                text.contains(&category),
+                "the category was pushed off at {width} columns: {text:?}"
+            );
+        }
     }
 }

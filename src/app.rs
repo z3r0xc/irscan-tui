@@ -675,7 +675,11 @@ impl App {
 
     /// How many findings the current filter is hiding.
     pub fn hidden(&self) -> usize {
-        self.rows.len() - self.visible.len()
+        // Saturating, like its neighbours. `visible` is a filtered subset built in
+        // the same pass, so a plain subtraction is correct today - and panics the
+        // day a caller appends to `visible` on its own. The guard costs one
+        // instruction and turns a future crash into a wrong number.
+        self.rows.len().saturating_sub(self.visible.len())
     }
 
     /// Whether the current filter is hiding a HIGH finding.
