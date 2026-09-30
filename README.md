@@ -37,14 +37,20 @@ cargo build --release
 ./target/release/irscan-tui
 ```
 
-One executable, **7.3 MB**, no runtime to install. Its only imports are Windows system
-libraries plus `VCRUNTIME140.dll` — the Visual C++ runtime, which is *not* present on a
-clean Windows install and arrives with the redistributable. If you are handing the file to
-someone else, either install that redistributable or build with a static CRT:
+One executable, **7.3 MB**, nothing to install beside it.
+
+It does import `VCRUNTIME140.dll`, the Visual C++ runtime, which is **not** on a clean
+Windows install — it arrives with the redistributable. So a binary copied to a fresh
+machine may refuse to start. Build it self-contained and that goes away:
 
 ```bash
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release
 ```
+
+That produces a 7.4 MB binary whose only imports are Windows system libraries, all of
+which are present on every install. The engine already does this — see
+`prov/.cargo/config.toml`, which sets the same flag and explains why there — so this
+project is consistent with it rather than inventing a second answer.
 
 ```bash
 ./target/release/irscan-tui --open report.json    # read a report produced earlier
