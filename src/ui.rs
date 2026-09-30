@@ -45,7 +45,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(header::widget(app), header);
     frame.render_widget(tabs::widget(app), tab_bar);
     match app.screen {
-        Screen::Dashboard => frame.render_widget(dashboard::widget(app), content),
+        Screen::Dashboard => frame.render_widget(dashboard::widget(app, content.width), content),
         Screen::Report => frame.render_widget(report::widget(app), content),
         Screen::Archive => frame.render_widget(archive::widget(app), content),
         Screen::Live => frame.render_widget(live::widget(app), content),

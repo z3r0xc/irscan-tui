@@ -13,7 +13,7 @@ use ratatui::Frame;
 use crate::app::{App, CollectorReport, Focus, ScanState};
 
 /// The dashboard.
-pub fn widget(app: &App) -> Paragraph<'static> {
+pub fn widget(app: &App, width: u16) -> Paragraph<'static> {
     let theme = &app.theme;
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
@@ -41,7 +41,7 @@ pub fn widget(app: &App) -> Paragraph<'static> {
         lines.push(Line::from(Span::styled(idle_message(app), theme.body())));
     } else {
         for collector in &app.collectors {
-            lines.push(collector_line(app, collector));
+            lines.push(collector_line(app, collector, width));
         }
     }
 
@@ -58,7 +58,10 @@ pub fn widget(app: &App) -> Paragraph<'static> {
 
 /// Draw the dashboard into `area`.
 pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    frame.render_widget(widget(app), area);
+    // The width is needed by `collector_line` to bound a collector's name and error
+    // message to what is left of the row. A fixed 16/120 would be wrong at 200
+    // columns and would still overflow at 40.
+    frame.render_widget(widget(app, area.width), area);
 }
 
 /// How many collectors have reported.
@@ -83,16 +86,36 @@ fn idle_message(app: &App) -> &'static str {
 
 /// One collector's line: name, how long it took, what it found, or why it could not
 /// run at all.
-fn collector_line<'a>(app: &'a App, collector: &'a CollectorReport) -> Line<'static> {
+fn collector_line(app: &App, collector: &CollectorReport, width: u16) -> Line<'static> {
     let theme = &app.theme;
-    match collector.error.as_ref() {
-        Some(error) => Line::from(vec![
-            Span::styled(format!("{:<16}", collector.name), theme.damage()),
-            Span::styled("FAILED", theme.damage()),
-            Span::styled(format!("  {error}"), theme.body()),
-        ]),
+    // The name and the error are both bounded before they are padded. `format!("{:<16}")`
+    // sets a MINIMUM width, so an unbounded name prints in full and wraps into the
+    // next row - and the log copy of the same string is already bounded at 300
+    // characters, so the same collector name was truncated on LIVE and not on SCAN.
+    // In practice the names come from the engine's fixed collector list, so this is
+    // defence in depth: `Event::Collector` is a public API and this is the one
+    // render path with no guard on it.
+    let name = crate::report::truncate_to_cells(&collector.name, 16);
+    let error = collector
+        .error
+        .as_ref()
+        .map(|e| crate::report::clean(e, 120));
+    match error.as_ref() {
+        Some(error) => {
+            // Whatever the fixed columns took, this is what is left for the message.
+            let spent = 1 + 16 + 1 + 6 + 2;
+            let left = (usize::from(width)).saturating_sub(spent);
+            Line::from(vec![
+                Span::styled(format!("{name:<16}"), theme.damage()),
+                Span::styled("FAILED", theme.damage()),
+                Span::styled(
+                    format!("  {}", crate::report::truncate_to_cells(error, left)),
+                    theme.body(),
+                ),
+            ])
+        }
         None => Line::from(vec![
-            Span::styled(format!("{:<16}", collector.name), theme.body()),
+            Span::styled(format!("{name:<16}"), theme.body()),
             Span::styled(
                 format!("{:>6} ms", collector.elapsed_ms),
                 theme.label(false),
@@ -115,7 +138,7 @@ mod tests {
     #[test]
     fn an_idle_dashboard_says_which_key_starts_a_scan() {
         let app = app();
-        let text = text_rows(&render(widget(&app), 80, 12)).join("\n");
+        let text = text_rows(&render(widget(&app, 100), 80, 12)).join("\n");
         assert!(text.contains("press s to scan"), "got {text}");
     }
 
@@ -130,7 +153,7 @@ mod tests {
             findings_added: 0,
             error: Some("access denied".to_string()),
         }));
-        let text = text_rows(&render(widget(&app), 80, 12)).join("\n");
+        let text = text_rows(&render(widget(&app, 100), 80, 12)).join("\n");
         assert!(text.contains("events"), "got {text}");
         assert!(text.contains("FAILED"), "got {text}");
         assert!(text.contains("access denied"), "got {text}");
@@ -148,7 +171,7 @@ mod tests {
             findings: Vec::new(),
             ..Report::default()
         });
-        let text = text_rows(&render(widget(&app), 80, 16)).join("\n");
+        let text = text_rows(&render(widget(&app, 100), 80, 16)).join("\n");
         assert!(text.contains("Security event log"), "got {text}");
         assert!(text.contains("Prefetch"), "got {text}");
     }
@@ -156,7 +179,7 @@ mod tests {
     #[test]
     fn the_dashboard_grows_a_list_without_growing_the_frame() {
         let mut app = app();
-        let short = text_rows(&render(widget(&app), 80, 12));
+        let short = text_rows(&render(widget(&app, 100), 80, 12));
         for index in 0..40 {
             app.apply(Event::Collector(CollectorReport {
                 name: format!("collector{index}"),
@@ -165,7 +188,7 @@ mod tests {
                 error: None,
             }));
         }
-        let long = text_rows(&render(widget(&app), 80, 12));
+        let long = text_rows(&render(widget(&app, 100), 80, 12));
         assert_eq!(short.len(), long.len());
     }
 }

@@ -192,6 +192,33 @@ The engine's threat model is a **hostile analysed machine**. Every string render
 TUI originates from that host: registry values, service paths, task names, file names,
 process command lines, network peers. That fact drives SR-1 through SR-4.
 
+### What the review added: resource bounds
+
+The requirements below were written before any code. An independent review of them found
+that they bounded every *string* and no *count*: `MAX_CHARS` limits a single field and says
+nothing about a report carrying a million of them, which a hostile report is free to do.
+These bounds are therefore part of the requirements, not an implementation detail.
+
+| Bound | Value | Why this one |
+|---|---|---|
+| `MAX_FILE_BYTES` | 64 MB | Checked **before** parsing — after is too late, the allocation has happened. A real report of a machine with a few hundred findings is tens of KB, so this leaves four orders of magnitude of headroom. |
+| `MAX_FINDINGS` | 20,000 | Refused above. Each finding becomes a `Row` with its evidence cloned, so the multiplier is three allocations per finding. The engine's own collectors cap far below this. |
+| `MAX_EVIDENCE` | 64 per finding | Truncated above. These render into a detail pane of reserved height, and a finding with a thousand evidence lines is not one an operator reads. |
+| `MAX_WARNINGS` | 500 | Truncated above. |
+| `MAX_RECOMMENDATIONS` | 32 | Truncated above. |
+
+**Why counts are refused and strings are truncated.** An over-long service name is still a
+readable service name, so truncating it loses nothing that mattered. A report claiming a
+billion findings does not describe a machine, and a view showing a truncated version of it
+would be showing a plausible lie. The same reasoning applies to the schema: a document with
+none is refused rather than defaulted, because `{}` parses to an empty report and renders as
+a clean machine — and "this file says nothing" must not look like "this machine is clean".
+
+Every count in a `Counts` saturates rather than wrapping or overflowing. A JSON number of
+`18446744073709551615` is a valid `usize`: a plain `+` panics in a debug build and wraps in a
+release one, and that total is shown on screen as the finding count — so one crashes the tool
+and the other reports a lie.
+
 - **SR-1 — Sanitise every untrusted string at the boundary.** ANSI escapes, OSC 8
   hyperlinks, bidirectional overrides, C0/C1 control characters and NULs are stripped
   *before* the string reaches a widget, without exception. The engine's `text::sanitize`
@@ -228,9 +255,14 @@ process command lines, network peers. That fact drives SR-1 through SR-4.
 - **QR-2 — `cargo fmt --all --check` reports no diff.**
 - **QR-3 — Every FR above has a test named after its behaviour, not after its function.**
   Test names are sentences stating the guarantee.
-- **QR-4 — Deterministic tests.** No test sleeps to synchronise, no test depends on the
-  terminal size, no test depends on wall-clock time. Motion is tested by calling the
-  easing functions with an explicit elapsed value.
+- **QR-4 — Deterministic tests.** No test sleeps to synchronise and no test depends on
+  wall-clock time. Motion is tested by calling the easing functions with an explicit elapsed
+  value.
+  A test *does* choose a terminal width, and the distinction matters: the width is an input
+  the test states, not an ambient property of the machine running it. `every_screen_renders_at
+  _eighty_columns_and_at_two_hundred` asserts the layout at two widths precisely because a
+  layout that only works at one is not a layout — a test that read the real terminal size
+  would pass on a developer machine and fail in CI, which is the opposite of deterministic.
 - **QR-5 — The whole test suite runs on Linux and on Windows.** This is the same constraint
   as FR-1, applied to the build.
 - **QR-6 — Colour degradation is tested, not assumed.** Truecolour, 256-colour, 16-colour
@@ -238,6 +270,32 @@ process command lines, network peers. That fact drives SR-1 through SR-4.
 - **QR-7 — Headless rendering is testable.** `ratatui::backend::TestBackend` renders each
   screen to a buffer, so layout assertions run in CI with no terminal attached. This is how
   "no region moves when data arrives" is verified rather than hoped for.
+
+## 6.1 Where each requirement is checked
+
+The ids mean something only if a test points at them, so the mapping is written down rather
+than left to a reader who greps for them.
+
+| Requirement | Test that carries it |
+|---|---|
+| FR-1 cross-platform | `scan::the_platform_boundary_is_the_only_place_a_platform_is_named`, plus the `shell-only` CI job that deletes the engine dependency and builds everything |
+| FR-4 one scan at a time | `app::a_scan_cannot_be_started_while_one_is_already_running` |
+| FR-5 live progress | `app::a_scan_that_lost_collectors_says_so_where_it_cannot_be_missed` |
+| FR-7 failures visible | `app::a_failing_collector_is_recorded_and_the_scan_carries_on` |
+| FR-8 verdict visible | `ui::report::the_engines_own_verdict_is_on_screen_because_it_says_what_the_counts_cannot` |
+| FR-10 filters are honest | `app::a_filter_that_hides_a_high_finding_is_marked_rather_than_silently_accepted` |
+| FR-13 comparison | `app::two_scans_of_one_host_report_what_changed`, `app::comparing_two_scans_of_different_hosts_is_refused` |
+| FR-17 staged edits | `ui::rules::a_staged_rule_edit_says_plainly_that_it_applies_to_the_next_scan` |
+| FR-19 designed surface | `theme::every_severity_is_distinguishable_with_no_colour_at_all` |
+| FR-20 motion | `motion::a_transition_reaches_its_target_exactly_and_not_asymptotically` |
+| FR-21 degradation | `theme::every_token_resolves_to_something_this_depth_can_display` |
+| SR-1 sanitise | `report::a_hostile_evidence_string_cannot_reach_a_widget_unstripped` |
+| SR-2 cell budget | `report::a_cjk_string_is_truncated_by_cells_and_not_by_characters` |
+| SR-3 traversal | `report::a_traversal_in_a_path_that_does_not_exist_yet_is_still_refused` |
+| SR-6 coverage named | `app::a_scan_with_reduced_coverage_says_what_it_will_not_see_before_it_starts` |
+| SR-7 no unsafe | `scan::no_unsafe_outside_the_engine_boundary` |
+| SR-8 one boundary | `scan::the_platform_boundary_is_the_only_place_a_platform_is_named` |
+| QR-7 layout holds | `ui::the_header_status_and_hint_rows_do_not_move_when_findings_arrive` |
 
 ## 7. Explicitly out of scope
 

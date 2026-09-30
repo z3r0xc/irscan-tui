@@ -94,13 +94,26 @@ jobs:
           repository: ${{ env.IRSCAN_REPO }}
           token: ${{ secrets.IRSCAN_TOKEN }}
           path: prov
+          # Named explicitly. The engine's default branch is `push-main`, but
+          # `actions/checkout` checks out `main` for a repository that has one, and
+          # the fetch of a branch that is not there is not an error you would expect:
+          # it leaves an empty directory, so cargo reports a missing Cargo.toml for a
+          # path that was checked out successfully. That is a genuinely confusing
+          # failure, and it is why the ref is stated rather than inherited.
+          ref: push-main
 
       - name: Point the manifest at the checkout
         shell: bash
         run: |
-          if [ "${{ runner.os }}" != "Windows" ]; then
-            sed -i "s|path = \"../prov/ir-recon\"|path = \"../prov/${{ env.ENGINE_PATH }}\"|" Cargo.toml
-          fi
+          # The manifest names `../prov/ir-recon`, which is how the two repositories
+          # sit on a developer machine. `actions/checkout` puts a `path:` INSIDE the
+          # workspace, so the same manifest resolves to a sibling of the workspace
+          # and cargo reports a missing Cargo.toml for a path that was checked out
+          # correctly. Rewritten rather than kept in step by hand, so there is one
+          # manifest rather than a second copy that can drift from it.
+          sed -i 's|path = "../prov/ir-recon"|path = "./prov/${{ env.ENGINE_PATH }}"|' Cargo.toml
+          grep -q 'path = "./prov/${{ env.ENGINE_PATH }}"' Cargo.toml \
+            || { echo "::error::the manifest rewrite did not apply"; exit 1; }
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -135,13 +148,35 @@ jobs:
           repository: ${{ env.IRSCAN_REPO }}
           token: ${{ secrets.IRSCAN_TOKEN }}
           path: prov
+          # Named explicitly. The engine's default branch is `push-main`, but
+          # `actions/checkout` checks out `main` for a repository that has one, and
+          # the fetch of a branch that is not there is not an error you would expect:
+          # it leaves an empty directory, so cargo reports a missing Cargo.toml for a
+          # path that was checked out successfully. That is a genuinely confusing
+          # failure, and it is why the ref is stated rather than inherited.
+          ref: push-main
 
       - name: Point the manifest at the checkout
+        shell: bash
         run: |
-          sed -i "s|path = \"../prov/ir-recon\"|path = \"../prov/${{ env.ENGINE_PATH }}\"|" Cargo.toml
+          # The same rewrite as the test job, and for the same reason: `path:` puts
+          # the engine inside the workspace while the manifest names a sibling of it.
+          sed -i 's|path = "../prov/ir-recon"|path = "./prov/${{ env.ENGINE_PATH }}"|' Cargo.toml
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: rustsec/audit-check@v1.4.1
+      # `cargo-audit` is not part of the Rust toolchain. Cached, because compiling it
+      # from source on every run costs more than the audit itself.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+
+      # `cargo audit` rather than `rustsec/audit-check`. The action takes its ignore
+      # list as an INPUT, so it would not read `.cargo/audit.toml` - the allow-list
+      # would apply locally and silently not apply here, which is the worst possible
+      # arrangement: a developer runs `cargo audit`, sees it pass, and CI fails or
+      # passes for a different reason. One list, in one file, read by the same
+      # command in both places.
+      - name: Audit
+        run: cargo audit

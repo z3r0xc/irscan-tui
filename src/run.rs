@@ -42,6 +42,16 @@ pub struct Options {
     pub open: Option<std::path::PathBuf>,
     /// Print the version and exit.
     pub version: bool,
+    /// Relaunch this program elevated, through a UAC prompt.
+    ///
+    /// The answer to "how do I run it", because a scan without administrator rights
+    /// silently loses the Security event log, Prefetch and the image paths of
+    /// protected processes - and a short report reads like a clean one. Windows
+    /// Terminal does not run elevated by default, so the flag is the difference
+    /// between full coverage and a blind spot nobody was told about.
+    pub elevate: bool,
+    /// Set on the relaunched copy so it does not relaunch again and loop.
+    pub elevated_already: bool,
 }
 
 /// Said when `--archive-dir` was given without a path.
@@ -69,6 +79,12 @@ impl Options {
                 "--ascii" => options.ascii = true,
                 "--version" | "-V" => options.version = true,
                 "--help" | "-h" => return Ok(None),
+                "--elevate" => options.elevate = true,
+                // Internal, and set by the relaunch rather than by a person. It is
+                // accepted rather than refused so that typing it does exactly what
+                // it says instead of erroring, and it stops the relaunched copy from
+                // relaunching itself forever.
+                "--elevated" => options.elevated_already = true,
                 "--archive-dir" => {
                     index += 1;
                     let value = args.get(index).ok_or_else(|| NO_ARCHIVE_DIR.to_string())?;
@@ -127,6 +143,7 @@ pub const fn usage() -> &'static str {
      Options:\n  \
        --open PATH         open a report the engine wrote earlier\n  \
        --archive-dir PATH  where past scans are kept\n  \
+       --elevate           ask for administrator rights first (Windows)\n  \
        --no-motion         do not animate; every duration becomes zero\n  \
        --ascii             use ASCII instead of Unicode box drawing\n  \
        -V, --version       print the version\n  \
@@ -134,6 +151,10 @@ pub const fn usage() -> &'static str {
      \n\
      Keys:\n  \
        q quit   1-5 screens   s scan   / search   j k move   x compare   ? help\n\
+     \n\
+     A scan without administrator rights cannot see the Security event log,\n\
+     Prefetch, or the image paths of protected processes. Pass --elevate to be\n\
+     asked for them; the interface names what is missing either way.\n\
      \n\
      A scan needs a Windows host. Elsewhere this opens, reads, searches and\n\
      compares reports produced elsewhere - see docs/spec.md section 2.\n"
@@ -481,11 +502,43 @@ mod tests {
         for flag in [
             "--open",
             "--archive-dir",
+            "--elevate",
             "--no-motion",
             "--ascii",
             "--version",
         ] {
             assert!(usage().contains(flag), "{flag} is not in the help text");
         }
+    }
+
+    #[test]
+    fn the_help_says_what_a_scan_without_administrator_rights_will_not_see() {
+        // The answer to "how do I run it", stated where the user reads it. Windows
+        // Terminal does not run elevated by default, so a scan run the obvious way
+        // silently loses the Security event log, and a short report reads like a
+        // clean one. The flag is in the help for that reason, not as a nicety.
+        let text = usage();
+        assert!(text.contains("Security event log"), "{text}");
+        assert!(text.contains("Prefetch"), "{text}");
+        assert!(text.contains("--elevate"), "{text}");
+    }
+
+    #[test]
+    fn asking_for_elevation_and_being_the_elevated_copy_are_two_different_flags() {
+        // `--elevated` is what the relaunch sets on the copy it starts. Without the
+        // distinction, `--elevate` relaunches itself and the user gets an infinite
+        // UAC loop; with it conflated into one flag, the two cannot be told apart.
+        let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let asks = Options::parse(&args(&["--elevate"]))
+            .expect("valid")
+            .expect("--help was not asked for");
+        assert!(asks.elevate);
+        assert!(!asks.elevated_already);
+
+        let is_copy = Options::parse(&args(&["--elevate", "--elevated"]))
+            .expect("valid")
+            .expect("--help was not asked for");
+        assert!(is_copy.elevate);
+        assert!(is_copy.elevated_already);
     }
 }

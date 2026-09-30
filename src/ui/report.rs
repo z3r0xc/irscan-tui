@@ -15,8 +15,11 @@ use crate::app::{App, Focus};
 use crate::report::truncate_to_cells;
 use crate::theme::Sev;
 
-/// Rows the list's chrome costs: two borders, the filter line and a gap.
-const LIST_CHROME: u16 = 4;
+/// Rows the list's chrome costs: two borders, the filter line, the verdict line and
+/// a gap. The verdict is chrome rather than a finding, so it scrolls with everything
+/// else and the list's capacity loses one row rather than a finding being pushed off
+/// the bottom.
+const LIST_CHROME: u16 = 5;
 
 /// The report screen.
 pub fn widget(app: &App) -> Report<'_> {
@@ -50,7 +53,11 @@ impl Report<'_> {
         let theme = &self.app.theme;
         let width = area.width.saturating_sub(2);
         let capacity = usize::from(area.height.saturating_sub(LIST_CHROME));
-        let mut lines: Vec<Line> = vec![self.filter_line(), Line::default()];
+        let mut lines: Vec<Line> = vec![
+            self.filter_line(),
+            self.verdict_line(width),
+            Line::default(),
+        ];
 
         if self.app.visible.is_empty() {
             lines.push(Line::from(Span::styled(self.empty_message(), theme.body())));
@@ -66,6 +73,30 @@ impl Report<'_> {
             lines.push(crate::ui::finding_row::row(self.app, index, width));
         }
         lines
+    }
+
+    /// The engine's own judgement of this machine, in its own words.
+    ///
+    /// FR-8 says the verdict is visible, and it is the one line on this screen the
+    /// engine wrote rather than this front end: "требуется внимание" alongside seven
+    /// findings says something a severity count cannot, because it is a conclusion
+    /// and not a tally. It was decoded, sanitised and stored the whole time and
+    /// simply never drawn.
+    fn verdict_line(&self, width: u16) -> Line<'static> {
+        let theme = &self.app.theme;
+        let Some(verdict) = self.app.report.as_ref().map(|r| &r.verdict) else {
+            return Line::default();
+        };
+        if verdict.headline.is_empty() {
+            return Line::default();
+        }
+        Line::from(vec![
+            Span::styled("verdict: ", theme.label(false)),
+            Span::styled(
+                truncate_to_cells(&verdict.headline, usize::from(width).saturating_sub(8)),
+                theme.display(),
+            ),
+        ])
     }
 
     /// The evidence and remediation of the selected finding.
@@ -264,5 +295,47 @@ mod tests {
         let area = Rect::new(0, 0, 80, 20);
         ratatui::widgets::Widget::render(widget(&app), area, &mut buffer);
         assert_eq!(text_rows(&buffer).len(), 20);
+    }
+
+    #[test]
+    fn the_engines_own_verdict_is_on_screen_because_it_says_what_the_counts_cannot() {
+        // FR-8, and a requirement that had been implemented everywhere except here:
+        // the verdict was decoded, sanitised, stored, cloned into the archive and
+        // never drawn. "требуется внимание" next to seven findings is a conclusion,
+        // where a severity count is a tally - and it is the one line on this screen
+        // the engine wrote rather than this front end.
+        let mut app = app_with_findings(7);
+        app.report
+            .as_mut()
+            .expect("a report is loaded")
+            .verdict
+            .headline = "требуется внимание".to_string();
+        let text = painted(&app, 200, 20);
+        assert!(
+            text.contains("verdict:"),
+            "the verdict is not on screen: {text}"
+        );
+        assert!(
+            text.contains("требуется внимание"),
+            "the engine's own words are missing: {text}"
+        );
+    }
+
+    #[test]
+    fn a_report_with_no_verdict_gets_no_verdict_line_rather_than_an_empty_one() {
+        // A report from before the verdict existed. An empty labelled row would be a
+        // claim that the engine said nothing, which is different from it not having
+        // said anything.
+        let mut app = app_with_findings(3);
+        app.report
+            .as_mut()
+            .expect("a report is loaded")
+            .verdict
+            .headline = String::new();
+        let text = painted(&app, 200, 20);
+        assert!(
+            !text.contains("verdict:"),
+            "an empty verdict row was drawn: {text}"
+        );
     }
 }

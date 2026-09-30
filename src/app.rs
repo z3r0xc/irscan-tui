@@ -361,6 +361,12 @@ pub struct App {
     pub delta: Option<Delta>,
     /// A staged rule edit, which applies to the *next* scan.
     pub staged_rules: Option<String>,
+    /// What the *next* scan will not see, known before it starts. SR-6.
+    ///
+    /// Not derived from a loaded report: this is set when a scan is armed, from the
+    /// engine's own answer about the running process, so it is on screen before the
+    /// scan rather than after it.
+    pub blind_spots: Vec<String>,
     /// The theme, chosen once at startup.
     pub theme: crate::theme::Theme,
     /// The motion durations, zeroed when motion is off.
@@ -426,6 +432,7 @@ impl App {
             archive_compare: None,
             delta: None,
             staged_rules: None,
+            blind_spots: Vec::new(),
             theme,
             durations,
             reveal,
@@ -537,6 +544,19 @@ impl App {
         if self.scan.is_running() {
             self.notice = Some(("a scan is already running".to_string(), true));
             return;
+        }
+        // SR-6. The blind spots are named on the dashboard the scan opens on, and
+        // the dashboard is the FIRST thing drawn - before a single collector has
+        // run. The previous version only ever showed them by reading
+        // `report.host.admin` after a report existed, which is the same information
+        // one step too late: the operator has already committed to a scan whose
+        // coverage is reduced, and a warning that appears with the results is a
+        // warning nobody reads before deciding whether to trust those results.
+        if !self.blind_spots.is_empty() {
+            self.push_log(
+                LogKind::Warning,
+                format!("this scan will not see: {}", self.blind_spots.join(", ")),
+            );
         }
         self.collectors.clear();
         self.rows.clear();
@@ -655,7 +675,11 @@ impl App {
 
     /// How many findings the current filter is hiding.
     pub fn hidden(&self) -> usize {
-        self.rows.len() - self.visible.len()
+        // Saturating, like its neighbours. `visible` is a filtered subset built in
+        // the same pass, so a plain subtraction is correct today - and panics the
+        // day a caller appends to `visible` on its own. The guard costs one
+        // instruction and turns a future crash into a wrong number.
+        self.rows.len().saturating_sub(self.visible.len())
     }
 
     /// Whether the current filter is hiding a HIGH finding.
@@ -1381,6 +1405,53 @@ mod tests {
         assert!(
             notice.contains("PC"),
             "the message lost its content: {notice}"
+        );
+    }
+
+    #[test]
+    fn a_scan_with_reduced_coverage_says_what_it_will_not_see_before_it_starts() {
+        // SR-6, and the security review marked this FAIL. The warning existed, but
+        // only after a report existed - read off `report.host.admin`, which is the
+        // report's own claim about itself, shown when the results appeared. By then
+        // the operator has already committed to a scan and is reading the output.
+        // The warning has to be the first thing on screen, before the first
+        // collector has run, or it is a warning nobody reads.
+        let mut state = app();
+        state.blind_spots = vec!["Security event log".to_string(), "Prefetch".to_string()];
+        state.apply(Event::Action(Action::StartScan));
+
+        let warned = state
+            .log
+            .iter()
+            .find(|line| line.text.contains("Security event log"));
+        assert!(
+            warned.is_some(),
+            "the blind spots were never named; the log was {:?}",
+            state.log
+        );
+        assert!(
+            state.scan.is_running(),
+            "the scan should have started anyway"
+        );
+        // And it lands on the dashboard, so it is on screen rather than only in a
+        // log the user has to go and open.
+        assert_eq!(state.screen, Screen::Dashboard);
+    }
+
+    #[test]
+    fn a_full_coverage_scan_does_not_warn_about_anything() {
+        // The other half: a warning that fires when there is nothing to warn about
+        // trains the operator to skip past it.
+        let mut state = app();
+        state.blind_spots = Vec::new();
+        state.apply(Event::Action(Action::StartScan));
+        assert!(
+            !state
+                .log
+                .iter()
+                .any(|line| line.text.contains("will not see")),
+            "a full-coverage scan raised a coverage warning: {:?}",
+            state.log
         );
     }
 

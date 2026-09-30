@@ -23,16 +23,57 @@ changed. This keeps every scan and makes that comparison the centre of the inter
 
 ## Running it
 
-```
+```bash
+git clone https://github.com/z3r0xc/irscan-tui
+cd irscan-tui
+
+# The engine is a path dependency. Put it beside this repository, or point
+# Cargo.toml at wherever yours lives:
+#   [target.'cfg(windows)'.dependencies]
+#   irscan = { path = "../irscan/ir-recon" }
+git clone https://github.com/z3r0xc/irscan ../irscan   # or adjust the path
+
 cargo build --release
-./target/release/irscan-tui                 # start empty
-./target/release/irscan-tui --open report.json
+./target/release/irscan-tui
 ```
 
-Keys: `q` quit · `1`–`5` or `tab` screens · `s` scan · `/` search · `j`/`k` move ·
-`x` compare · `d` delete · `e` export · `?` help.
+One executable, **7.3 MB**, nothing to install beside it.
 
-Flags: `--open PATH`, `--archive-dir PATH`, `--no-motion`, `--ascii`, `-V`, `-h`.
+It does import `VCRUNTIME140.dll`, the Visual C++ runtime, which is **not** on a clean
+Windows install — it arrives with the redistributable. So a binary copied to a fresh
+machine may refuse to start. Build it self-contained and that goes away:
+
+```bash
+RUSTFLAGS="-C target-feature=+crt-static" cargo build --release
+```
+
+That produces a 7.4 MB binary whose only imports are Windows system libraries, all of
+which are present on every install. The engine already does this — see
+`prov/.cargo/config.toml`, which sets the same flag and explains why there — so this
+project is consistent with it rather than inventing a second answer.
+
+```bash
+./target/release/irscan-tui --open report.json    # read a report produced earlier
+./target/release/irscan-tui --elevate             # ask for administrator rights first
+./target/release/irscan-tui --no-motion           # no animation
+```
+
+Keys: `q` quit · `1`–`5` or `tab` screens · `s` scan · `S` cancel · `/` search ·
+`j`/`k` move · `J` clear filter · `x` compare · `d` delete · `e` export · `?` help.
+
+### Administrator rights, and why they matter
+
+**A scan without them cannot see the Security event log, Prefetch, or the image paths of
+protected processes.** The report that comes back is *shorter*, not *wrong*, and a short
+report reads like a clean one — which is the confusion this tool is built to prevent. So:
+
+- The header says `not admin · reduced coverage` for as long as that is true.
+- The scan screen **names** the three blind spots before the first collector runs.
+- `--elevate` asks for administrator rights through a UAC prompt and hands the terminal to
+  the elevated copy. Declining is fine — the scan runs, and the blind spots are still named.
+
+Windows Terminal does not run elevated by default, so `irscan-tui --elevate` is the
+difference between full coverage and three holes nobody was told about.
 
 ## Cross-platform, and what that means
 
@@ -114,6 +155,15 @@ yours sits somewhere else.
 CI runs all four on Windows and Linux. Requirements are in
 [`docs/spec.md`](docs/spec.md) with stable FR-xx and SR-xx ids; the plan is in
 [`docs/plan.md`](docs/plan.md).
+
+`cargo audit` is a fifth gate, run in CI with the same command that runs locally, so
+[`.cargo/audit.toml`](.cargo/audit.toml) is the single allow-list rather than one file for a
+developer and a list of action inputs for CI.
+
+CI fetches the private engine with `secrets.IRSCAN_TOKEN` (a PAT with `repo` scope). The job
+that proves the cross-compile claim — `shell-only`, which deletes the engine dependency and
+builds everything — needs no secret, so that guarantee does not depend on a credential that
+can expire.
 
 ## Licence
 

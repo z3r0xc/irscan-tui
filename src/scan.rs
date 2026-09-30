@@ -179,6 +179,34 @@ pub mod platform {
         }
     }
 
+    /// Relaunch this program with administrator rights, through a UAC prompt.
+    ///
+    /// Returns `None` when the relaunch happened — the caller exits and the elevated
+    /// copy is now the program. Returns `Some(reason)` when it did not, and the
+    /// caller carries on with reduced coverage and says so, because a declined
+    /// prompt is a decision and not an error. The engine owns this call: it goes
+    /// through `ShellExecuteExW` with the `runas` verb and never builds a command
+    /// line, so nothing from the scanned host can reach a command interpreter. SR-4.
+    #[cfg(windows)]
+    pub fn relaunch_elevated() -> Option<&'static str> {
+        if irscan::win::is_elevated() {
+            return None;
+        }
+        // `--elevated` is what stops the new copy relaunching itself. Without it
+        // this is an infinite UAC loop, which is exactly as bad as it sounds.
+        if irscan::win::elevate::relaunch_elevated(&["--elevated".to_string()]) {
+            None
+        } else {
+            Some("the UAC prompt was declined, so this scan will have reduced coverage")
+        }
+    }
+
+    /// Everywhere else: there is nothing to elevate to, and it is said plainly.
+    #[cfg(not(windows))]
+    pub const fn relaunch_elevated() -> Option<&'static str> {
+        Some("elevation is a Windows concept; on this platform there is no host to scan")
+    }
+
     /// The progress the engine reports while it runs.
     ///
     /// The same shape on both platforms, so the run loop is written once and the
@@ -228,13 +256,16 @@ pub mod platform {
         // number that could not run at all.
         let failures = collect::run_all_with(&collectors, &mut ctx, on_progress);
 
+        // Only the fields this crate actually reads are named. The engine's
+        // `HostInfo` grows over time, and naming a field here couples this build to
+        // an engine commit it does not control: the Linux CI job builds without the
+        // engine and never noticed, and the Windows job failed on a field the engine
+        // had not committed yet. `..Default()` covers whatever arrives later, and
+        // the fields the interface needs are exactly the ones named here.
         let host = HostInfo {
             name: std::env::var("COMPUTERNAME").unwrap_or_default(),
             user: std::env::var("USERNAME").unwrap_or_default(),
-            os: std::env::consts::OS.to_string(),
-            build: String::new(),
             elevated: irscan::win::is_elevated(),
-            quick,
             collected_at: irscan::win::local_time_string(),
             ..HostInfo::default()
         };
