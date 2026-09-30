@@ -192,6 +192,33 @@ The engine's threat model is a **hostile analysed machine**. Every string render
 TUI originates from that host: registry values, service paths, task names, file names,
 process command lines, network peers. That fact drives SR-1 through SR-4.
 
+### What the review added: resource bounds
+
+The requirements below were written before any code. An independent review of them found
+that they bounded every *string* and no *count*: `MAX_CHARS` limits a single field and says
+nothing about a report carrying a million of them, which a hostile report is free to do.
+These bounds are therefore part of the requirements, not an implementation detail.
+
+| Bound | Value | Why this one |
+|---|---|---|
+| `MAX_FILE_BYTES` | 64 MB | Checked **before** parsing — after is too late, the allocation has happened. A real report of a machine with a few hundred findings is tens of KB, so this leaves four orders of magnitude of headroom. |
+| `MAX_FINDINGS` | 20,000 | Refused above. Each finding becomes a `Row` with its evidence cloned, so the multiplier is three allocations per finding. The engine's own collectors cap far below this. |
+| `MAX_EVIDENCE` | 64 per finding | Truncated above. These render into a detail pane of reserved height, and a finding with a thousand evidence lines is not one an operator reads. |
+| `MAX_WARNINGS` | 500 | Truncated above. |
+| `MAX_RECOMMENDATIONS` | 32 | Truncated above. |
+
+**Why counts are refused and strings are truncated.** An over-long service name is still a
+readable service name, so truncating it loses nothing that mattered. A report claiming a
+billion findings does not describe a machine, and a view showing a truncated version of it
+would be showing a plausible lie. The same reasoning applies to the schema: a document with
+none is refused rather than defaulted, because `{}` parses to an empty report and renders as
+a clean machine — and "this file says nothing" must not look like "this machine is clean".
+
+Every count in a `Counts` saturates rather than wrapping or overflowing. A JSON number of
+`18446744073709551615` is a valid `usize`: a plain `+` panics in a debug build and wraps in a
+release one, and that total is shown on screen as the finding count — so one crashes the tool
+and the other reports a lie.
+
 - **SR-1 — Sanitise every untrusted string at the boundary.** ANSI escapes, OSC 8
   hyperlinks, bidirectional overrides, C0/C1 control characters and NULs are stripped
   *before* the string reaches a widget, without exception. The engine's `text::sanitize`
