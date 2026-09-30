@@ -77,7 +77,7 @@ scan. It is now named on the dashboard before the first collector runs.
 cargo build --release          # zero warnings
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
-cargo test                    # 165 tests
+cargo test                    # 170 tests
 ```
 
 CI runs all four on Windows and Linux, plus a `shell-only` job with the engine removed and an
