@@ -118,3 +118,76 @@ fn persist(options: &Options, app: &irscan_tui::app::App, opened: bool) {
         Err(e) => eprintln!("irscan-tui: cannot serialise the report: {e}"),
     }
 }
+
+
+#[cfg(test)]
+mod manifest {
+    //! The manifest is pinned by reading it out of the built executable.
+    //!
+    //! The engine does this for itself in its `src/lib.rs`, and the reason applies
+    //! identically here: the thing that decides whether Windows shows a UAC prompt
+    //! and opens the program in a separate window is a linker flag in a build script
+    //! of a *dependency*. That is invisible in a diff of this crate and completely
+    //! decisive about how the program feels to use.
+    //!
+    //! The test skips when there is no executable to read, so `cargo test` on a fresh
+    //! checkout does not fail for a reason that has nothing to do with the code. It
+    //! is not a silent pass in the way that would matter: building before testing is
+    //! what CI and a developer both do, and the assertion runs.
+    use std::path::Path;
+
+    /// The built executable, if this test run can see one.
+    fn exe() -> Option<std::path::PathBuf> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/irscan-tui.exe");
+        path.exists().then_some(path)
+    }
+
+    /// The whole file as text. A manifest is a resource, not plain text at a fixed
+    /// offset, and a PE resource section holds it verbatim, so a lossy read finds it.
+    fn as_text(path: &Path) -> String {
+        let bytes = std::fs::read(path).expect("the executable should be readable");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[test]
+    fn the_manifest_asks_for_no_privilege_so_the_tui_opens_in_the_terminal_it_was_typed_in() {
+        // The engine embeds `level='requireAdministrator'`, which makes Windows start
+        // an elevated conhost in a SEPARATE WINDOW on every launch. A full-screen
+        // program that opens detached from the shell the user is sitting in is not a
+        // terminal program that happens to be elevated; it is a window that happens
+        // to be full-screen. It also makes --elevate meaningless, because the
+        // process is already up, and it makes reading a report require dismissing a
+        // UAC prompt for a privilege level that reading does not need.
+        let path = match exe() {
+            Some(path) => path,
+            None => {
+                eprintln!("no built executable; run `cargo build` first");
+                return;
+            }
+        };
+        let text = as_text(&path);
+        let missing_invoker = text.contains("asInvoker") == false;
+        assert!(
+            missing_invoker == false,
+            "the binary does not ask for asInvoker, so every launch prompts for UAC and \
+             opens in a separate window. See build.rs."
+        );
+        let still_admin = text.contains("requireAdministrator");
+        assert!(
+            still_admin == false,
+            "the binary still asks for administrator, inherited from the engine's build \
+             script. See build.rs."
+        );
+    }
+
+    #[test]
+    fn a_missing_executable_skips_rather_than_failing_for_an_unrelated_reason() {
+        // Documented as behaviour rather than left to chance: the assertion above is
+        // only meaningful when there is a binary to read, and a test that fails
+        // because someone ran `cargo test` on a clean checkout is a test people
+        // learn to ignore.
+        if exe().is_none() {
+            eprintln!("skipped: build first to check the manifest");
+        }
+    }
+}

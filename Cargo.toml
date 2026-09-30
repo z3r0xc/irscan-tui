@@ -6,6 +6,9 @@ edition = "2021"
 rust-version = "1.85"
 description = "A terminal interface for irscan, the read-only Windows endpoint triage tool"
 license = "MIT OR Apache-2.0"
+# The linker arguments here override the engine's, which ask for administrator on every
+# launch. See build.rs for why that is wrong for a terminal program.
+build = "build.rs"
 repository = "https://github.com/z3r0xc/irscan-tui"
 
 [dependencies]
