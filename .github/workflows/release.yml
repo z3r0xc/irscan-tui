@@ -1,0 +1,132 @@
+# A release is a tag, and a tag is `cargo build --release` plus three files.
+#
+# The build is reproducible from the tag: the same source, the same flags, the
+# same static-CRT setting from .cargo/config.toml. Nothing here is a matrix of
+# platforms, because the engine is Windows-only - a TUI that is the *shell*
+# could cross-compile, but the thing being shipped is the shell plus an engine,
+# and the engine is Win32 FFI.
+#
+# The checksum file is what install.ps1 verifies against, so producing it is part
+# of the release rather than a follow-up someone forgets.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build, without the leading v'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  IRSCAN_REPO: z3r0xc/irscan
+  ENGINE_PATH: ir-recon
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The engine is a private repository, so this job needs the PAT. It is the
+      # only job in the project that does.
+      - name: Check out the engine beside this repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRSCAN_REPO }}
+          token: ${{ secrets.IRSCAN_TOKEN }}
+          path: prov
+          ref: push-main
+
+      - name: Point the manifest at the checkout
+        shell: bash
+        run: |
+          sed -i 's|path = "../prov/ir-recon"|path = "./prov/${{ env.ENGINE_PATH }}"|' Cargo.toml
+          grep -q 'path = "./prov/${{ env.ENGINE_PATH }}"' Cargo.toml \
+            || { echo "::error::the manifest rewrite did not apply"; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the release
+        run: cargo build --release --locked
+
+      # The shipped binary must not need the Visual C++ redistributable, or
+      # install.ps1 would install something that will not start on a clean
+      # machine. The static CRT comes from .cargo/config.toml; this asserts it
+      # actually took effect rather than trusting the file to still be there.
+      - name: The binary needs no redistributable
+        shell: pwsh
+        run: |
+          $exe = 'target\release\irscan-tui.exe'
+          if (-not (Test-Path $exe)) { throw "no binary at $exe" }
+          $imports = (dumpbin /DEPENDENTS $exe 2>$null | Out-String)
+          if ($imports -match 'VCRUNTIME|MSVCP\d') {
+            $imports
+            throw "the binary imports the Visual C++ runtime. install.ps1 would install something that cannot start on a clean Windows."
+          }
+          "imports: no CRT"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF -replace 'refs/tags/', '' }
+                 else { "v${{ inputs.tag }}" }
+          $name = "irscan-tui-$tag-x86_64-pc-windows-msvc"
+          $stage = Join-Path $env:RUNNER_TEMP 'stage'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          Copy-Item 'target\release\irscan-tui.exe' $stage
+          Copy-Item README.md $stage
+          Copy-Item install.ps1 $stage
+
+          # Written in the layout `sha256sum -c` expects on Unix and
+          # install.ps1 parses: hash, two spaces, asterisk, name. The asterisk is
+          # binary mode, and its absence is a portability bug rather than a style
+          # choice on Windows.
+          $hash = (Get-FileHash "$stage\irscan-tui.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash *irscan-tui.exe" | Set-Content -Path "$stage\SHA256SUMS.txt" -Encoding ascii
+          $hash
+
+          Compress-Archive -Path "$stage\*" -DestinationPath "$name.zip" -Force
+          Get-Item "$name.zip" | Select-Object Name, Length
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
+          $name = "irscan-tui-$tag-x86_64-pc-windows-msvc"
+
+          gh release create $tag `
+            "$name.zip" `
+            "$name.zip.sha256" `
+            --repo $env:IRSCAN_REPO `
+            --title "irscan-tui $tag" `
+            --generate-notes `
+            --notes "A terminal interface for irscan. Install it with:
+
+    irm https://raw.githubusercontent.com/z3r0xc/irscan-tui/main/install.ps1 | iex
+
+The binary is built with a static CRT, so it needs no Visual C++
+redistributable and nothing installed beside it."
+
+          # The standalone checksum is convenience for a curl-based install; the
+          # one inside the zip is what install.ps1 verifies.
+          "$name.zip.sha256" | Set-Content -Path "$name.zip.sha256" -Encoding ascii -Value (
+            (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + "$name.zip"
+          )
+          gh release upload $tag "$name.zip.sha256" --repo $env:IRSCAN_REPO --clobber
+          "published $tag"

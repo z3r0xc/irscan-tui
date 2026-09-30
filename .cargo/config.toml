@@ -1,0 +1,13 @@
+# Build configuration for the shipped binary.
+#
+# Static C runtime, on purpose. The deliverable is a single file that gets
+# downloaded by a PowerShell one-liner onto a machine nobody has touched, and
+# `vcruntime140.dll` is NOT part of a clean Windows installation - it arrives
+# with the Visual C++ redistributable. A dynamically linked CRT would therefore
+# produce an installer that succeeds and a program that will not start, which is
+# the worst combination available.
+#
+# This is the engine's own setting and the same reasoning, taken from
+# `prov/.cargo/config.toml`.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
