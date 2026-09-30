@@ -164,8 +164,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # Recomputed rather than inherited: each `run:` block is a separate
+          # pwsh process and shares no variables with the previous step. The first
+          # version read `$stage` from the packaging step, which is null here, and
+          # failed on Join-Path with a message about the wrong thing entirely.
           $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
           $name = "irscan-tui-$tag-x86_64-pc-windows-msvc"
+          $stage = Join-Path $env:RUNNER_TEMP 'stage'
+          if (-not (Test-Path $name)) { throw "the archive is not in the working directory: $name" }
 
           # Notes go in a file rather than a --notes argument. A multi-line YAML
           # string containing `irm ...: something` is read as a mapping key by the
