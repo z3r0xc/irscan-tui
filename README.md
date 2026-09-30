@@ -115,6 +115,15 @@ CI runs all four on Windows and Linux. Requirements are in
 [`docs/spec.md`](docs/spec.md) with stable FR-xx and SR-xx ids; the plan is in
 [`docs/plan.md`](docs/plan.md).
 
+`cargo audit` is a fifth gate, run in CI with the same command that runs locally, so
+[`.cargo/audit.toml`](.cargo/audit.toml) is the single allow-list rather than one file for a
+developer and a list of action inputs for CI.
+
+CI fetches the private engine with `secrets.IRSCAN_TOKEN` (a PAT with `repo` scope). The job
+that proves the cross-compile claim — `shell-only`, which deletes the engine dependency and
+builds everything — needs no secret, so that guarantee does not depend on a credential that
+can expire.
+
 ## Licence
 
 MIT OR Apache-2.0, matching the engine.
