@@ -467,32 +467,80 @@ fn slug(input: &str) -> String {
 /// resolved yet is a promise and not a fact. `docs/spec.md` SR-3: a traversal in a
 /// stored path is refused, never sanitised into something plausible.
 pub fn ensure_inside(dir: &Path, candidate: &Path) -> Result<PathBuf, CodecError> {
-    let base = dir
-        .canonicalize()
-        .map_err(|e| CodecError::Io(std::io::Error::other(format!("archive dir: {e}"))))?;
-    // `canonicalize` resolves `..`, but only for a path that exists. A path that
-    // does not exist yet is resolved against the base manually, which is enough to
-    // catch a traversal without requiring the file to be there.
-    let resolved = if candidate.exists() {
-        candidate
-            .canonicalize()
-            .map_err(|e| CodecError::Io(std::io::Error::other(format!("archive entry: {e}"))))?
+    // Two checks, because one is not enough and fusing them into one is what the
+    // Linux CI job found broken.
+    //
+    // The lexical one runs on the caller's own spelling of the directory and
+    // catches `..` for any path, existing or not. This is the part that was
+    // missing: `Path::starts_with` compares components, and `..` is itself a
+    // component, so `archive/../../outside.json` starts with `archive` and passed
+    // a check that then handed the traversal to `remove_file`.
+    //
+    // The canonical one applies only to a path that exists, and catches a symlink
+    // inside the archive pointing out of it. It cannot be the only check: on
+    // Windows `canonicalize` returns a `\\?\` verbatim prefix that the caller's path
+    // does not carry, so comparing the two spellings refuses *everything* - which
+    // is exactly what the first attempt at this function did, and it refused valid
+    // paths along with the traversal.
+    let base = normalise(dir);
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
     } else {
-        base.join(strip_prefix(candidate, dir))
+        base.join(candidate)
     };
-    if resolved.starts_with(&base) {
-        Ok(resolved)
-    } else {
-        Err(CodecError::OutsideArchive(resolved.display().to_string()))
+    let resolved = normalise(&joined);
+
+    if !resolved.starts_with(&base) {
+        return Err(CodecError::OutsideArchive(resolved.display().to_string()));
     }
+
+    if resolved.exists() {
+        let real_base = dir
+            .canonicalize()
+            .map_err(|e| CodecError::Io(std::io::Error::other(format!("archive dir: {e}"))))?;
+        let real_resolved = resolved
+            .canonicalize()
+            .map_err(|e| CodecError::Io(std::io::Error::other(format!("archive entry: {e}"))))?;
+        if !real_resolved.starts_with(&real_base) {
+            return Err(CodecError::OutsideArchive(
+                real_resolved.display().to_string(),
+            ));
+        }
+    }
+
+    Ok(resolved)
 }
 
-/// Make `candidate` relative to `dir` without touching the filesystem.
+/// Resolve `.` and `..` in a path without touching the filesystem.
 ///
-/// `Path::strip_prefix` works on components, so it refuses a relative path outright
-/// rather than producing a path that escapes.
-fn strip_prefix<'a>(candidate: &'a Path, dir: &Path) -> &'a Path {
-    candidate.strip_prefix(dir).unwrap_or(candidate)
+/// `..` pops the previous component, and a `..` with nothing to pop is kept — a
+/// path that climbs above its own root is left visibly absolute rather than
+/// silently clamped, so `ensure_inside` refuses it instead of it quietly pointing
+/// back inside.
+fn normalise(path: &Path) -> PathBuf {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            // `.` and a repeated root carry no information: pushing `RootDir` twice
+            // on Windows produces `C:\C:\...`, which is not a path at all.
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let popped = match out.components().next_back() {
+                    Some(Component::Normal(_)) => out.pop(),
+                    _ => false,
+                };
+                // A `..` with nothing to pop is kept, so a path climbing above its
+                // own root stays visibly absolute rather than being clamped back
+                // inside - which would make `ensure_inside` accept it.
+                if !popped {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// The display width of a string in cells.
@@ -910,6 +958,73 @@ mod tests {
         assert!(result.is_err(), "a traversal was accepted: {result:?}");
         let inside = dir.join("entry.json");
         assert!(ensure_inside(&dir, &inside).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_traversal_in_a_path_that_does_not_exist_yet_is_still_refused() {
+        // The Linux CI job found this, and it is worth recording why the Windows run
+        // did not: `Path::starts_with` compares components, and `..` is itself a
+        // component. So `archive/../../outside.json` *does* start with `archive` and
+        // passed a containment check that then handed the traversal straight to
+        // `remove_file`.
+        //
+        // The Windows run passed only because `candidate.exists()` was true for the
+        // temporary directory the test created, so `canonicalize` resolved the `..`
+        // for it. A path that does not exist takes the other branch, and that
+        // branch never resolved anything. The fix is to normalise lexically and not
+        // to depend on the path being there.
+        let dir = std::env::temp_dir().join("irscan-tui-normalise-test");
+        let _ = std::fs::create_dir_all(&dir);
+
+        // `..` alone is deliberately absent: `dir.join("..")` is the parent
+        // directory, which exists, so the "must not exist" guard would reject the
+        // fixture rather than test anything. It is refused anyway - a path that
+        // resolves to the parent is outside the base - and the `../outside.json`
+        // case below covers the same shape.
+        for escape in [
+            "../outside.json",
+            "a/../../outside.json",
+            "a/b/../../../outside.json",
+            "./../outside.json",
+        ] {
+            let candidate = dir.join(escape);
+            assert!(
+                !candidate.exists(),
+                "{escape} must not exist, or this test proves nothing"
+            );
+            let result = ensure_inside(&dir, &candidate);
+            assert!(
+                result.is_err(),
+                "{escape} was accepted as inside: {result:?}"
+            );
+        }
+
+        // And the paths that ARE inside still pass, including a nested one and one
+        // carrying `.` segments, so the check is not simply refusing everything.
+        for inside in [
+            "entry.json",
+            "a/entry.json",
+            "./a/entry.json",
+            "a/./b/entry.json",
+        ] {
+            let result = ensure_inside(&dir, &dir.join(inside));
+            assert!(result.is_ok(), "{inside} was refused: {result:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_relative_path_that_escapes_is_refused_even_without_a_leading_dot_dot() {
+        // The other shape a stored path can take: a bare relative path that the
+        // caller meant as relative to the archive, but that points elsewhere.
+        let dir = std::env::temp_dir().join("irscan-tui-relative-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let result = ensure_inside(&dir, Path::new("sub/../../elsewhere.json"));
+        assert!(
+            result.is_err(),
+            "a relative traversal was accepted: {result:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
