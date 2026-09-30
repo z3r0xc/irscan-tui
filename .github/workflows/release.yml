@@ -110,23 +110,41 @@ jobs:
           $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
           $name = "irscan-tui-$tag-x86_64-pc-windows-msvc"
 
+          # Notes go in a file rather than a --notes argument. A multi-line YAML
+          # string containing `irm ...: something` is read as a mapping key by the
+          # parser, and the whole workflow fails to load — silently, right up until
+          # someone pushes a tag. This file is also what the first release was
+          # actually published with.
+          $notes = @"
+          A terminal interface for [irscan](https://github.com/z3r0xc/irscan), the read-only Windows endpoint triage tool.
+
+          ## Install
+
+          ```powershell
+          irm https://raw.githubusercontent.com/z3r0xc/irscan-tui/main/install.ps1 | iex
+          ```
+
+          Then run `irscan-tui --elevate`. The flag matters - a scan without
+          administrator rights cannot see the Security event log, Prefetch, or the
+          image paths of protected processes, and a shorter report reads like a
+          clean one.
+
+          The binary is built with a static CRT, so it needs no Visual C++
+          redistributable and nothing installed beside it.
+          "@
+          $notesPath = Join-Path $stage 'NOTES.md'
+          $notes | Set-Content -Path $notesPath -Encoding utf8
+
           gh release create $tag `
             "$name.zip" `
-            "$name.zip.sha256" `
             --repo $env:IRSCAN_REPO `
             --title "irscan-tui $tag" `
-            --generate-notes `
-            --notes "A terminal interface for irscan. Install it with:
+            --notes-file $notesPath `
+            --generate-notes
 
-    irm https://raw.githubusercontent.com/z3r0xc/irscan-tui/main/install.ps1 | iex
-
-The binary is built with a static CRT, so it needs no Visual C++
-redistributable and nothing installed beside it."
-
-          # The standalone checksum is convenience for a curl-based install; the
-          # one inside the zip is what install.ps1 verifies.
-          "$name.zip.sha256" | Set-Content -Path "$name.zip.sha256" -Encoding ascii -Value (
-            (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + "$name.zip"
-          )
-          gh release upload $tag "$name.zip.sha256" --repo $env:IRSCAN_REPO --clobber
+          # SHA256SUMS.txt is uploaded after the release exists, because
+          # `gh release upload` needs a release to upload to. It is what
+          # install.ps1 fetches and verifies against, so a release without it
+          # leaves the installer refusing to install anything at all.
+          gh release upload $tag "SHA256SUMS.txt" --repo $env:IRSCAN_REPO --clobber
           "published $tag"
