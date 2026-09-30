@@ -81,7 +81,12 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes($exe)
 
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
-          if ([BitConverter]::ToString($bytes, $peOffset, 4) -ne 'PE\0\0') {
+          # Compared byte by byte, not with [BitConverter]::ToString: that returns
+          # four HEX BYTE VALUES as a string ("50-45-00-00"), and comparing that to
+          # 'PE' is always false. Which is why the first run of this reported "no PE
+          # signature" on a perfectly good binary.
+          if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 `
+              -or $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) {
             throw "not a PE file: no PE signature at the offset the header points to"
           }
           # PE32+ (0x20b) is the only thing rustc emits for x86_64, and the data
