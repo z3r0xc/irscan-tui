@@ -171,7 +171,10 @@ jobs:
           $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
           $name = "irscan-tui-$tag-x86_64-pc-windows-msvc"
           $stage = Join-Path $env:RUNNER_TEMP 'stage'
-          if (-not (Test-Path $name)) { throw "the archive is not in the working directory: $name" }
+          # With the extension, which is the whole difference: the packaging step
+          # writes "$name.zip" and this was testing for "$name", so the check
+          # rejected a file that was sitting right there.
+          if (-not (Test-Path "$name.zip")) { throw "the archive is not in the working directory: $name.zip" }
 
           # Notes go in a file rather than a --notes argument. A multi-line YAML
           # string containing `irm ...: something` is read as a mapping key by the
