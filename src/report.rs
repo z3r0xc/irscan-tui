@@ -270,7 +270,18 @@ impl Report {
             });
         }
         let mut report: Report = serde_json::from_str(json).map_err(CodecError::Json)?;
-        if !report.schema.is_empty() && report.schema != SCHEMA {
+        // A MISSING schema is refused, not tolerated. Every other field defaults,
+        // because an older report without it is still a report about a machine. The
+        // schema is different: it is the first line the engine's serialiser writes
+        // and it says the document is a report at all. Accepting a document without
+        // one means `{}` parses to a valid, entirely empty report, which renders as
+        // a clean machine - and "this file says nothing" and "this machine is
+        // clean" being the same screen is the exact confusion FR-7 exists to
+        // prevent.
+        if report.schema.is_empty() {
+            return Err(CodecError::NoSchema);
+        }
+        if report.schema != SCHEMA {
             return Err(CodecError::Schema(report.schema));
         }
         report.bound()?;
@@ -382,6 +393,15 @@ pub enum CodecError {
     Io(#[from] std::io::Error),
     #[error("the archive entry escapes the archive directory and was refused: {0}")]
     OutsideArchive(String),
+    /// A document that carries no schema identifier at all.
+    ///
+    /// Separate from `Schema(String)`, because the two need different sentences. A
+    /// v2 report means this build is out of date; a document with no schema means
+    /// the file is not a report at all - a wrong path, a stray JSON export, an empty
+    /// object - and "this is not an irscan report" is a more useful thing to say than
+    /// "the schema is wrong".
+    #[error("this file is not an irscan report: it carries no schema, so it says nothing about any machine")]
+    NoSchema,
     /// A report whose size or counts exceed what a real machine can produce.
     ///
     /// A distinct variant rather than a `Json` error, because the two need
@@ -1061,6 +1081,35 @@ mod tests {
         );
         let report = parsed_from(&json);
         assert_eq!(report.findings[0].evidence.len(), MAX_EVIDENCE);
+    }
+
+    #[test]
+    fn a_file_with_no_schema_is_refused_rather_than_shown_as_a_clean_machine() {
+        // `{}` used to parse to a valid, entirely empty report, because every field
+        // defaults. It then rendered as a machine with nothing on it - and "this
+        // file says nothing" and "this machine is clean" became the same screen,
+        // which is the one confusion this tool exists to prevent. The schema is the
+        // engine's first line and it says the document is a report at all.
+        for json in ["{}", r#"{"findings":[]}"#, r#"{"schema":"","findings":[]}"#] {
+            let err = match Report::parse(json) {
+                Ok(_) => panic!("{json} was accepted as a report"),
+                Err(e) => e,
+            };
+            assert!(
+                err.to_string().contains("not an irscan report"),
+                "unhelpful error for {json}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_report_with_the_right_schema_still_loads_even_with_every_other_field_absent() {
+        // The other half, and the reason this is not just "demand more fields". A
+        // report from a very old engine can be missing the verdict entirely, and
+        // that is still a report about a machine.
+        let report = parsed_from(r#"{"schema":"irscan/v1"}"#);
+        assert!(report.findings.is_empty());
+        assert!(report.host.name.is_empty());
     }
 
     #[test]
