@@ -105,9 +105,15 @@ jobs:
       - name: Point the manifest at the checkout
         shell: bash
         run: |
-          if [ "${{ runner.os }}" != "Windows" ]; then
-            sed -i "s|path = \"../prov/ir-recon\"|path = \"../prov/${{ env.ENGINE_PATH }}\"|" Cargo.toml
-          fi
+          # The manifest names `../prov/ir-recon`, which is how the two repositories
+          # sit on a developer machine. `actions/checkout` puts a `path:` INSIDE the
+          # workspace, so the same manifest resolves to a sibling of the workspace
+          # and cargo reports a missing Cargo.toml for a path that was checked out
+          # correctly. Rewritten rather than kept in step by hand, so there is one
+          # manifest rather than a second copy that can drift from it.
+          sed -i 's|path = "../prov/ir-recon"|path = "./prov/${{ env.ENGINE_PATH }}"|' Cargo.toml
+          grep -q 'path = "./prov/${{ env.ENGINE_PATH }}"' Cargo.toml \
+            || { echo "::error::the manifest rewrite did not apply"; exit 1; }
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -151,8 +157,11 @@ jobs:
           ref: push-main
 
       - name: Point the manifest at the checkout
+        shell: bash
         run: |
-          sed -i "s|path = \"../prov/ir-recon\"|path = \"../prov/${{ env.ENGINE_PATH }}\"|" Cargo.toml
+          # The same rewrite as the test job, and for the same reason: `path:` puts
+          # the engine inside the workspace while the manifest names a sibling of it.
+          sed -i 's|path = "../prov/ir-recon"|path = "./prov/${{ env.ENGINE_PATH }}"|' Cargo.toml
 
       - uses: dtolnay/rust-toolchain@stable
 
