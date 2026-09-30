@@ -16,10 +16,11 @@ changed. This keeps every scan and makes that comparison the centre of the inter
 - **Read a report** with severity ordering, drill-down into evidence and remediation,
   composable filters and free-text search. The visible and total counts are always on
   screen, and a filter that hides a HIGH finding is marked.
-- **Keep an archive** of every scan and **compare** any two of the same host: what appeared,
-  what resolved, and what changed severity. This is the feature the front end exists for.
-- **Watch the live log** of collectors, findings, warnings and failures.
-- **Browse and stage rule edits**, which apply to the *next* scan and say so plainly.
+> **Not built:** the in-app rule editor (FR-16–18) and report export (FR-11). Both say
+> so on screen rather than pretending — a `rules` screen promising "press e to edit" that
+> does nothing is worse than one that admits the editor is not here, and an export button
+> reporting success while writing nothing is a lie told about a result someone is about to
+> act on. Edit `rules/` in the engine directly, or pipe `irscan --json` out of the CLI.
 
 ## Running it
 

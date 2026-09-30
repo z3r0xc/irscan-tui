@@ -29,10 +29,22 @@ pub fn widget(app: &App) -> Paragraph<'static> {
             Span::styled(truncate_to_cells(edit, 48), theme.machine()),
             Span::styled("  — applies to the NEXT scan, not this one", theme.staged()),
         ])),
-        None => lines.push(Line::from(Span::styled(
-            "no staged edit — press e to edit a rule file",
-            theme.body(),
-        ))),
+        // Says what is not here rather than advertising a key that does not do
+        // this. A screen promising "press e to edit" and then doing nothing is worse
+        // than a screen that admits the editor is not built - one makes the operator
+        // think their edit was saved, and the other tells them to go and do it by
+        // hand in a text editor.
+        None => {
+            lines.push(Line::from(Span::styled("no staged edit", theme.body())));
+            // Says what is not here rather than advertising a key that does not do
+            // this. A screen promising "press e to edit" and then doing nothing is
+            // worse than one that admits the editor is not built: the first makes
+            // the operator think their edit was saved.
+            lines.push(Line::from(Span::styled(
+                "the in-app rule editor is not implemented; edit rules/ directly",
+                theme.staged(),
+            )));
+        }
     }
 
     Paragraph::new(lines).block(

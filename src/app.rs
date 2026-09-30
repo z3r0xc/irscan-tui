@@ -518,8 +518,15 @@ impl App {
             }
             Action::CompareSelected => self.compare(),
             Action::DeleteSelected => self.delete_selected(),
+            // FR-11 is not implemented, and saying "exported" here would be a lie
+            // told by the tool about a result someone is about to act on. The notice
+            // states what is not there instead, so nobody walks away believing a
+            // report was written.
             Action::Export => {
-                self.notice = Some((format!("{} findings exported", self.rows.len()), false))
+                self.notice = Some((
+                    "export is not implemented: no file was written".to_string(),
+                    true,
+                ))
             }
             Action::OpenArchive => self.goto(Screen::Archive),
         }
@@ -1545,6 +1552,31 @@ mod tests {
         assert_eq!(state.query, "x");
         state.apply(Event::Backspace);
         assert!(state.query.is_empty());
+    }
+
+    #[test]
+    fn pressing_export_says_it_did_not_export_rather_than_claiming_it_did() {
+        // FR-11 is not implemented, and a notice reading "3 findings exported" is a
+        // lie the tool tells about a result someone is about to act on. Worse than
+        // silence: silence is a missing feature, and a false confirmation is a
+        // feature that reports success while doing nothing.
+        let mut state = app();
+        state.apply(Event::Action(Action::Export));
+        let (notice, is_problem) = state
+            .notice
+            .expect("pressing a key should say something either way");
+        assert!(
+            is_problem,
+            "a refusal should be marked as a problem, not as staged"
+        );
+        assert!(
+            notice.to_lowercase().contains("not implemented"),
+            "unhelpful notice: {notice}"
+        );
+        assert!(
+            !notice.to_lowercase().contains("exported"),
+            "the notice must not claim a file was written: {notice}"
+        );
     }
 
     fn archived(host: &str, findings: Vec<SanitisedFinding>) -> Archived {

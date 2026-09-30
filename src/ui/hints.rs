@@ -34,7 +34,10 @@ fn hints(screen: Screen) -> &'static [(&'static str, &'static str)] {
             ("q", "quit"),
         ],
         Screen::Live => &[("?", "help"), ("q", "quit")],
-        Screen::Rules => &[("e", "edit"), ("?", "help"), ("q", "quit")],
+        // No `e edit` here: the in-app editor is not built, and a key hint is a
+        // promise about what a key does. The hint and the action are removed
+        // together so the two cannot drift.
+        Screen::Rules => &[("?", "help"), ("q", "quit")],
     }
 }
 
