@@ -103,11 +103,23 @@ function Get-Asset {
     $api = "https://api.github.com/repos/$Repo/releases/tags/v$Version"
     $rel = Invoke-RestMethod -Uri $api -Headers $headers -UseBasicParsing
 
-    $wanted = "$BinaryName-$AssetSuffix.zip"
-    $asset = $rel.assets | Where-Object { $_.name -eq $wanted } | Select-Object -First 1
+    # Matched on a pattern, not on an exact name. The release names its asset after
+    # the version - `irscan-tui-v0.1.0-x86_64-pc-windows-msvc.zip` - so an installer
+    # that looks for a fixed name works for exactly one release and then tells every
+    # user it cannot find a file that is right there. The pattern is the part that
+    # does not change: the program, the triple, the extension.
+    $pattern = '^irscan-tui-v?[0-9][^-]*.*' + [regex]::Escape($AssetSuffix) + '\.zip$'
+    $asset = $rel.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
     if (-not $asset) {
         $have = ($rel.assets | ForEach-Object { $_.name }) -join ', '
-        throw "Release v$Version has no asset named $wanted. It has: $have"
+        throw @"
+Release v$Version has no asset matching 'irscan-tui-*-$AssetSuffix.zip'.
+
+It has: $have
+
+If this is a tag with no assets yet, the release workflow may still be running.
+Check https://github.com/$Repo/releases
+"@
     }
     return $asset
 }
@@ -135,18 +147,30 @@ try {
         Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -UseBasicParsing
         Invoke-WebRequest -Uri "https://github.com/$Repo/releases/download/v$v/SHA256SUMS.txt" -OutFile $sha -UseBasicParsing
 
-        # --- verify, and refuse to continue on a mismatch --------------------
+        Expand-Archive -Path $zip -DestinationPath $temp -Force
+
+        $exe = Join-Path $temp $BinaryName
+        if (-not (Test-Path $exe)) {
+            throw "the archive did not contain $BinaryName"
+        }
+
+        # --- verify the BINARY, and refuse to continue on a mismatch ---------
+        # The published checksum is of the executable, not of the archive, so it
+        # is checked after expanding and against the extracted file. Verifying the
+        # zip against a hash of the exe would compare two different things and
+        # always fail - which is the sort of mistake that gets "fixed" by deleting
+        # the check.
         $expected = $null
         foreach ($line in (Get-Content $sha)) {
-            if ($line -match "^\s*([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($asset.name))\s*$") {
+            if ($line -match "^\s*([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($BinaryName))\s*$") {
                 $expected = $Matches[1].ToLowerInvariant()
                 break
             }
         }
         if (-not $expected) {
-            throw "SHA256SUMS.txt does not list $($asset.name). Refusing to install an unverified binary."
+            throw "SHA256SUMS.txt does not list $BinaryName. Refusing to install an unverified binary."
         }
-        $actual = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actual = (Get-FileHash -Path $exe -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actual -ne $expected) {
             if ($Force) {
                 Write-Fail "hash mismatch, continuing because -Force was given"
@@ -155,25 +179,18 @@ try {
             }
             else {
                 throw @"
-The download does not match the published SHA-256.
+The binary does not match the published SHA-256.
 
   expected $expected
   actual   $actual
 
-Nothing was installed. Either the download was truncated, or the published
-checksum does not describe this file. Do not pass -Force to get past this
-without knowing which of those it is.
+Nothing was installed. Either the download was corrupted in transit, or the
+published checksum does not describe this file. Do not pass -Force to get past
+this without knowing which of those it is.
 "@
             }
         }
         Write-Step 'checksum verified'
-
-        Expand-Archive -Path $zip -DestinationPath $temp -Force
-
-        $exe = Join-Path $temp $BinaryName
-        if (-not (Test-Path $exe)) {
-            throw "the archive did not contain $BinaryName"
-        }
 
         # Mark-of-the-Web: a file fetched over the internet keeps a zone
         # identifier, and PowerShell refuses to run a script from a zone it did
