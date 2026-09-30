@@ -66,14 +66,66 @@ jobs:
       - name: The binary needs no redistributable
         shell: pwsh
         run: |
-          $exe = 'target\release\irscan-tui.exe'
-          if (-not (Test-Path $exe)) { throw "no binary at $exe" }
-          $imports = (dumpbin /DEPENDENTS $exe 2>$null | Out-String)
-          if ($imports -match 'VCRUNTIME|MSVCP\d') {
-            $imports
-            throw "the binary imports the Visual C++ runtime. install.ps1 would install something that cannot start on a clean Windows."
+          # Read the import table straight out of the PE file rather than shelling
+          # out to `dumpbin`. `dumpbin` only exists inside a Developer Command
+          # Prompt, and a GitHub runner is not one - so the first version of this
+          # check failed with "the term 'dumpbin' is not recognized", and because it
+          # piped stderr to $null the real reason was invisible and the step read
+          # as though the binary had a CRT problem.
+          #
+          # PE import directory: at the offset in the optional header's data
+          # directory entry 1, an array of IMAGE_IMPORT_DESCRIPTOR, each a
+          # null-terminated list of DLL name RVAs.
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'target\release\irscan-tui.exe').Path
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToString($bytes, $peOffset, 4) -ne 'PE\0\0') {
+            throw "not a PE file: no PE signature at the offset the header points to"
           }
-          "imports: no CRT"
+          # PE32+ (0x20b) is the only thing rustc emits for x86_64, and the data
+          # directory starts at a different offset in it than in PE32.
+          $optional = $peOffset + 24
+          $magic = [BitConverter]::ToUInt16($bytes, $optional)
+          if ($magic -ne 0x20b) { throw "expected a PE32+ image, got magic 0x$('{0:x}' -f $magic)" }
+          $dirOffset = $optional + 112 + 8      # after the fixed part and one entry
+          $rva = [BitConverter]::ToUInt32($bytes, $dirOffset)
+          if ($rva -eq 0) { throw "the image imports nothing at all, which is not what a Rust binary does" }
+
+          $sections = [BitConverter]::ToUInt16($bytes, $peOffset + 6)
+          $table = $peOffset + 24 + [BitConverter]::ToUInt16($bytes, $peOffset + 20)
+          function To-Offset([uint32] $rva) {
+              for ($i = 0; $i -lt $sections; $i++) {
+                  $s = $table + 40 * $i
+                  $vaddr = [BitConverter]::ToUInt32($bytes, $s + 12)
+                  $vsize = [BitConverter]::ToUInt32($bytes, $s + 8)
+                  $raw = [BitConverter]::ToUInt32($bytes, $s + 20)
+                  $rawSize = [BitConverter]::ToUInt32($bytes, $s + 16)
+                  if ($rva -ge $vaddr -and $rva -lt ($vaddr + $vsize)) { return $raw + ($rva - $vaddr) }
+              }
+              throw "RVA 0x$('{0:x}' -f $rva) is in no section"
+          }
+
+          $names = [System.Collections.Generic.List[string]]::new()
+          $desc = To-Offset $rva
+          while ($true) {
+              # Name RVA is the third field of IMAGE_IMPORT_DESCRIPTOR.
+              $nameRva = [BitConverter]::ToUInt32($bytes, $desc + 12)
+              if ($nameRva -eq 0) { break }
+              $p = To-Offset $nameRva
+              $end = $p
+              while ($bytes[$end] -ne 0) { $end++ }
+              $names.Add([Text.Encoding]::ASCII.GetString($bytes, $p, $end - $p))
+              $desc += 20
+          }
+
+          "imports: " + ($names -join ', ')
+          $crt = $names | Where-Object { $_ -match '^(VCRUNTIME|MSVCP\d)' }
+          if ($crt) {
+              throw "the binary imports $($crt -join ', '). install.ps1 would install something that cannot start on a clean Windows."
+          }
+          "no CRT imports"
 
       - name: Package
         shell: pwsh
