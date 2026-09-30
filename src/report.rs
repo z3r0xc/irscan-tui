@@ -37,6 +37,39 @@ pub const SCHEMA: &str = "irscan/v1";
 /// (`model::MAX_STRING`); this is the second, independent pass.
 pub const MAX_CHARS: usize = 512;
 
+/// The most findings a report may contain.
+///
+/// `MAX_CHARS` bounds every *string*, and a string is not the only thing a hostile
+/// report controls. A file with a million findings in it is parseable, is a few
+/// hundred megabytes once deserialised, becomes a second allocation when every
+/// finding is sanitised into a `Row`, and a third when the rows are indexed for
+/// filtering - so a triage box dies before it shows anything. The engine's own
+/// collectors are capped well below this (`model::MAX_RECORDS` and friends), and a
+/// real scan of a real machine does not come close.
+pub const MAX_FINDINGS: usize = 20_000;
+
+/// The most evidence or remediation lines one finding may carry.
+///
+/// Small on purpose: these render as a handful of lines in a detail pane, and a
+/// finding with a thousand of them is not a finding an operator reads. The bound is
+/// also what makes the detail pane's reserved height a real limit rather than an
+/// assumption.
+pub const MAX_EVIDENCE: usize = 64;
+
+/// The most warnings a report may carry.
+pub const MAX_WARNINGS: usize = 500;
+
+/// The most recommendation lines a verdict may carry.
+pub const MAX_RECOMMENDATIONS: usize = 32;
+
+/// The most bytes a report file may be.
+///
+/// Checked before parsing rather than after, because "after" is too late: the
+/// allocation has already happened. A real `irscan --json` report of a machine with
+/// a few hundred findings is tens of kilobytes, so this leaves four orders of
+/// magnitude of headroom while still refusing the 2 GB file that OOMs the process.
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// A finding, as the engine wrote it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
@@ -229,11 +262,52 @@ impl Report {
     /// defaulted instead of erroring, for the same reason - an older report from
     /// before a field existed is a report someone still has on disk.
     pub fn parse(json: &str) -> Result<Self, CodecError> {
-        let report: Report = serde_json::from_str(json).map_err(CodecError::Json)?;
+        if json.len() as u64 > MAX_FILE_BYTES {
+            return Err(CodecError::TooLarge {
+                what: "the report file",
+                got: json.len() as u64,
+                limit: MAX_FILE_BYTES,
+            });
+        }
+        let mut report: Report = serde_json::from_str(json).map_err(CodecError::Json)?;
         if !report.schema.is_empty() && report.schema != SCHEMA {
             return Err(CodecError::Schema(report.schema));
         }
+        report.bound()?;
         Ok(report)
+    }
+
+    /// Bring every attacker-controlled count inside its bound.
+    ///
+    /// Truncation rather than refusal, and the asymmetry is deliberate. An oversized
+    /// *string* is truncated because a long service name is still a readable
+    /// service name. An oversized *count* is refused, because a report claiming two
+    /// billion HIGH findings is not a report with too much data - it is a report that
+    /// does not describe a machine, and a view that shows a truncated version of it
+    /// would be showing a plausible lie.
+    fn bound(&mut self) -> Result<(), CodecError> {
+        if self.findings.len() > MAX_FINDINGS {
+            return Err(CodecError::TooLarge {
+                what: "the finding count",
+                got: self.findings.len() as u64,
+                limit: MAX_FINDINGS as u64,
+            });
+        }
+        if self.warnings.len() > MAX_WARNINGS {
+            self.warnings.truncate(MAX_WARNINGS);
+        }
+        if self.verdict.recommendation.len() > MAX_RECOMMENDATIONS {
+            self.verdict.recommendation.truncate(MAX_RECOMMENDATIONS);
+        }
+        for finding in &mut self.findings {
+            if finding.evidence.len() > MAX_EVIDENCE {
+                finding.evidence.truncate(MAX_EVIDENCE);
+            }
+            if finding.remediation.len() > MAX_EVIDENCE {
+                finding.remediation.truncate(MAX_EVIDENCE);
+            }
+        }
+        Ok(())
     }
 
     /// Counts by severity, least to most severe.
@@ -271,17 +345,28 @@ pub struct Counts {
 
 impl Counts {
     /// The total across every severity.
+    ///
+    /// Saturating, because the four counts are decoded from JSON and a report can
+    /// claim `usize::MAX` of them. A plain `+` panics on that in a debug build and
+    /// wraps to a small number in a release one — and this total is shown on screen
+    /// as the number of findings, so neither outcome is acceptable: one crashes the
+    /// triage tool, the other shows "3" for a machine with two billion findings.
     pub const fn total(&self) -> usize {
-        self.high + self.medium + self.low + self.info
+        self.high
+            .saturating_add(self.medium)
+            .saturating_add(self.low)
+            .saturating_add(self.info)
     }
 
     /// Add one finding of a severity.
     pub fn add(&mut self, severity: crate::theme::Sev) {
+        // The count itself saturates for the same reason `total` does: a
+        // saturating counter is still a count, whereas a wrapped one is a lie.
         match severity {
-            crate::theme::Sev::High => self.high += 1,
-            crate::theme::Sev::Medium => self.medium += 1,
-            crate::theme::Sev::Low => self.low += 1,
-            crate::theme::Sev::Info => self.info += 1,
+            crate::theme::Sev::High => self.high = self.high.saturating_add(1),
+            crate::theme::Sev::Medium => self.medium = self.medium.saturating_add(1),
+            crate::theme::Sev::Low => self.low = self.low.saturating_add(1),
+            crate::theme::Sev::Info => self.info = self.info.saturating_add(1),
         }
     }
 }
@@ -297,6 +382,19 @@ pub enum CodecError {
     Io(#[from] std::io::Error),
     #[error("the archive entry escapes the archive directory and was refused: {0}")]
     OutsideArchive(String),
+    /// A report whose size or counts exceed what a real machine can produce.
+    ///
+    /// A distinct variant rather than a `Json` error, because the two need
+    /// different responses: a malformed file is a mistake, and a 2 GB file with two
+    /// billion findings is an attack or a runaway producer. Both numbers are named
+    /// because "the file is too large" is not actionable and "2 GB against a 64 MB
+    /// limit" is.
+    #[error("{what} is {got} bytes or items, over the {limit} this build accepts: refused rather than shown truncated")]
+    TooLarge {
+        what: &'static str,
+        got: u64,
+        limit: u64,
+    },
 }
 
 /// Strip everything from a string that came off a hostile host that could mislead a
@@ -914,6 +1012,90 @@ mod tests {
         };
         assert_eq!(a.host_key(), b.host_key());
         assert_ne!(a.host_key(), c.host_key());
+    }
+
+    #[test]
+    fn a_report_claiming_an_impossible_number_of_findings_is_refused_rather_than_shown() {
+        // HIGH finding count 1e9, a number a machine cannot produce. The asymmetry
+        // with strings is deliberate: an over-long service name is still a readable
+        // service name, but a report claiming two billion findings is not a report
+        // with too much data, it is a report that does not describe a machine. A
+        // view showing a truncated version of it would be showing a plausible lie.
+        let json = format!(
+            r#"{{"schema":"{SCHEMA}","findings":[{}]}}"#,
+            vec![r#"{"severity":"high","title":"x"}"#; MAX_FINDINGS + 1].join(",")
+        );
+        let err = match Report::parse(&json) {
+            Ok(_) => panic!("a report with {MAX_FINDINGS}+1 findings was accepted"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("refused"),
+            "unhelpful error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_report_at_the_finding_limit_is_accepted_rather_than_refused() {
+        // The bound has to have a side that passes, or it is a denial of service
+        // against every real report rather than a defence against a hostile one.
+        let json = format!(
+            r#"{{"schema":"{SCHEMA}","findings":[{}]}}"#,
+            vec![r#"{"severity":"low","title":"x"}"#; MAX_FINDINGS].join(",")
+        );
+        let report = match Report::parse(&json) {
+            Ok(report) => report,
+            Err(e) => panic!("a report at the limit was refused: {e}"),
+        };
+        assert_eq!(report.findings.len(), MAX_FINDINGS);
+    }
+
+    #[test]
+    fn a_finding_with_a_thousand_evidence_lines_is_bounded_because_no_one_reads_them() {
+        // These render into a detail pane with a reserved height. A finding with a
+        // thousand evidence lines is not a finding an operator reads, and every
+        // line is a sanitised clone.
+        let json = format!(
+            r#"{{"schema":"{SCHEMA}","findings":[{{"severity":"high","title":"x","evidence":[{}]}}]}}"#,
+            vec![r#""line""#; MAX_EVIDENCE + 500].join(",")
+        );
+        let report = parsed_from(&json);
+        assert_eq!(report.findings[0].evidence.len(), MAX_EVIDENCE);
+    }
+
+    #[test]
+    fn a_count_that_would_overflow_saturates_rather_than_panicking_or_wrapping() {
+        // `high: 18446744073709551615` is a valid JSON number and a valid `usize`. A
+        // plain `+` panics in a debug build and wraps to 1 in a release one, and
+        // this total is shown on screen as "N findings" - so one crashes the triage
+        // tool and the other reports a lie.
+        let counts = Counts {
+            high: usize::MAX,
+            medium: 2,
+            low: 0,
+            info: 0,
+        };
+        assert_eq!(counts.total(), usize::MAX, "the total wrapped");
+
+        let mut counted = Counts::default();
+        counted.add(crate::theme::Sev::High);
+        counted.add(crate::theme::Sev::High);
+        assert_eq!(counted.high, 2);
+    }
+
+    #[test]
+    fn a_file_larger_than_the_limit_is_refused_before_it_is_parsed() {
+        // "After" is too late: the allocation has already happened, and a 2 GB file
+        // on a triage box kills the process rather than producing an error.
+        let huge = "x".repeat(MAX_FILE_BYTES as usize + 1);
+        let err = match Report::parse(&huge) {
+            Ok(_) => panic!("an oversized file was parsed"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("refused"),
+            "unhelpful error: {err}"
+        );
     }
 
     #[test]
