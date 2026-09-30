@@ -73,6 +73,19 @@ elevated copy. Declining is fine: the scan runs, and the blind spots are still n
 Windows Terminal does not run elevated by default, so `irscan-tui --elevate` is the
 difference between full coverage and three holes nobody was told about.
 
+### It opens in this terminal
+
+Worth knowing, because it is not the default and it was a bug once. The engine's build script
+asks the linker for `requireAdministrator`, and `rustc-link-arg-bins` applies to whichever
+binary is being built — so taking the engine as a dependency brought its manifest with it.
+Every launch then prompted for UAC, and Windows started an **elevated console in a separate
+window**: the TUI came up detached from the terminal you typed it into, and `--elevate` was
+meaningless because the process was already up.
+
+`build.rs` re-issues the argument as `asInvoker`, and a test reads the manifest out of the
+built executable to keep it that way. So: plain `irscan-tui` runs here, with three named blind
+spots; `irscan-tui --elevate` asks for the rights and hands the terminal to the elevated copy.
+
 Keys: `q` quit · `1`–`5` or `tab` screens · `s` scan · `S` cancel · `/` search ·
 `j`/`k` move · `J` clear filter · `x` compare · `d` delete · `?` help.
 
