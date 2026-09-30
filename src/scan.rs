@@ -228,13 +228,16 @@ pub mod platform {
         // number that could not run at all.
         let failures = collect::run_all_with(&collectors, &mut ctx, on_progress);
 
+        // Only the fields this crate actually reads are named. The engine's
+        // `HostInfo` grows over time, and naming a field here couples this build to
+        // an engine commit it does not control: the Linux CI job builds without the
+        // engine and never noticed, and the Windows job failed on a field the engine
+        // had not committed yet. `..Default()` covers whatever arrives later, and
+        // the fields the interface needs are exactly the ones named here.
         let host = HostInfo {
             name: std::env::var("COMPUTERNAME").unwrap_or_default(),
             user: std::env::var("USERNAME").unwrap_or_default(),
-            os: std::env::consts::OS.to_string(),
-            build: String::new(),
             elevated: irscan::win::is_elevated(),
-            quick,
             collected_at: irscan::win::local_time_string(),
             ..HostInfo::default()
         };
