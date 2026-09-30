@@ -94,6 +94,13 @@ jobs:
           repository: ${{ env.IRSCAN_REPO }}
           token: ${{ secrets.IRSCAN_TOKEN }}
           path: prov
+          # Named explicitly. The engine's default branch is `push-main`, but
+          # `actions/checkout` checks out `main` for a repository that has one, and
+          # the fetch of a branch that is not there is not an error you would expect:
+          # it leaves an empty directory, so cargo reports a missing Cargo.toml for a
+          # path that was checked out successfully. That is a genuinely confusing
+          # failure, and it is why the ref is stated rather than inherited.
+          ref: push-main
 
       - name: Point the manifest at the checkout
         shell: bash
@@ -135,6 +142,13 @@ jobs:
           repository: ${{ env.IRSCAN_REPO }}
           token: ${{ secrets.IRSCAN_TOKEN }}
           path: prov
+          # Named explicitly. The engine's default branch is `push-main`, but
+          # `actions/checkout` checks out `main` for a repository that has one, and
+          # the fetch of a branch that is not there is not an error you would expect:
+          # it leaves an empty directory, so cargo reports a missing Cargo.toml for a
+          # path that was checked out successfully. That is a genuinely confusing
+          # failure, and it is why the ref is stated rather than inherited.
+          ref: push-main
 
       - name: Point the manifest at the checkout
         run: |
