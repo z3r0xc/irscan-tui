@@ -25,7 +25,9 @@ env:
   # checkout of this repository on its own cannot satisfy the `cfg(windows)`
   # dependency. CI checks the engine out beside it, which is also how the two are
   # actually developed.
-  IRSCAN_REPO: https://github.com/z3r0xc/irscan.git
+  # `owner/repo`, not a URL: `actions/checkout` rejects a URL with
+  # "Expected format {owner}/{repo}", which is a confusing way to learn that.
+  IRSCAN_REPO: z3r0xc/irscan
 
   # Linux needs the path in `Cargo.toml` rewritten: the dependency there is
   # `../prov/ir-recon`, which is how the two sit on a developer machine and is
@@ -93,7 +95,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # The engine again. An audit resolves the whole dependency graph, and the
+      # graph contains a path dependency, so without the engine present the audit
+      # fails to load the manifest rather than reporting anything. That is a
+      # confusing failure: it looks like a broken manifest rather than a missing
+      # sibling checkout, and the first version of this job had exactly that.
+      - name: Check out the engine beside this repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.IRSCAN_REPO }}
+          path: prov
+
+      - name: Point the manifest at the checkout
+        shell: bash
+        run: |
+          sed -i "s|path = \"../prov/ir-recon\"|path = \"../prov/${{ env.ENGINE_PATH }}\"|" Cargo.toml
+
       - uses: dtolnay/rust-toolchain@stable
+
       - uses: rustsec/audit-check@v1.4.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
