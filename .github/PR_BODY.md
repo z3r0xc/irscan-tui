@@ -8,6 +8,28 @@ The reason it exists is **report history**. The engine keeps one "last scan". A 
 works a shift — scans, sits with a finding, scans again — and needs to know what changed. This
 keeps every scan and makes that comparison the centre of the interface.
 
+## Running it
+
+```bash
+git clone https://github.com/z3r0xc/irscan-tui && cd irscan-tui
+git clone https://github.com/z3r0xc/irscan ../irscan   # the engine is a path dependency
+cargo build --release
+./target/release/irscan-tui --elevate
+```
+
+One executable, 7.3 MB, nothing to install beside it.
+
+`--elevate` matters. A scan without administrator rights cannot see the Security event log,
+Prefetch, or the image paths of protected processes, and the report that comes back is
+*shorter* rather than *wrong* — which reads like a clean machine. Windows Terminal does not
+run elevated by default, so this flag is the difference between full coverage and three holes
+nobody was told about. The interface names the blind spots whether or not the flag is passed.
+
+The binary does import `VCRUNTIME140.dll`, which is absent from a clean Windows install. For a
+portable build, `RUSTFLAGS="-C target-feature=+crt-static" cargo build --release` removes it and
+leaves only system libraries — the same flag the engine already sets in
+`prov/.cargo/config.toml`, for the same reason.
+
 ## The constraint that shaped it
 
 `ir-recon` is raw Win32 FFI with **no `cfg(windows)` anywhere in it**, so `windows-sys` does not
@@ -77,7 +99,7 @@ scan. It is now named on the dashboard before the first collector runs.
 cargo build --release          # zero warnings
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
-cargo test                    # 170 tests
+cargo test                    # 172 tests
 ```
 
 CI runs all four on Windows and Linux, plus a `shell-only` job with the engine removed and an
