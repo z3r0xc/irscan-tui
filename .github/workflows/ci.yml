@@ -165,6 +165,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: rustsec/audit-check@v1.4.1
+      # `cargo-audit` is not part of the Rust toolchain. Cached, because compiling it
+      # from source on every run costs more than the audit itself.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+
+      # `cargo audit` rather than `rustsec/audit-check`. The action takes its ignore
+      # list as an INPUT, so it would not read `.cargo/audit.toml` - the allow-list
+      # would apply locally and silently not apply here, which is the worst possible
+      # arrangement: a developer runs `cargo audit`, sees it pass, and CI fails or
+      # passes for a different reason. One list, in one file, read by the same
+      # command in both places.
+      - name: Audit
+        run: cargo audit
